@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/imohiyoko/agent/internal/audit"
 	"github.com/imohiyoko/agent/internal/auth"
@@ -22,9 +23,12 @@ import (
 	"github.com/imohiyoko/agent/internal/spec"
 )
 
+func (rt *nsRuntime) name() string { return rt.proxy.Name() }
+
 // nsRuntime is everything running for one namespace.
 type nsRuntime struct {
-	ns      *spec.Namespace
+	ns      *spec.Namespace // replaced on reload; read with Server.mu held
+	cancel  context.CancelFunc
 	proxy   *egress.Proxy
 	gateway *mcpgw.Gateway
 	// Linux: unix sockets. macOS: loopback ports.
@@ -35,7 +39,7 @@ type nsRuntime struct {
 // Server is a running nsctl.
 type Server struct {
 	cfg     *Config
-	set     *spec.Set
+	setp    atomic.Pointer[spec.Set]
 	tokens  *auth.Store
 	authz   *auth.Authorizer
 	secrets secrets.Source
@@ -49,7 +53,14 @@ type Server struct {
 	mu   sync.Mutex
 	nss  map[string]*nsRuntime
 	runs *runs
+
+	// Set while Run is serving, for Reload.
+	runCtx context.Context
+	errc   chan error
 }
+
+// nsSet returns the current declarations.
+func (s *Server) nsSet() *spec.Set { return s.setp.Load() }
 
 // New loads the declarations and prepares the server.
 func New(cfg *Config) (*Server, error) {
@@ -72,7 +83,6 @@ func New(cfg *Config) (*Server, error) {
 	}
 	s := &Server{
 		cfg:     cfg,
-		set:     set,
 		tokens:  auth.NewStore(cfg.TokensFile()),
 		authz:   &auth.Authorizer{Admins: admins},
 		secrets: secrets.File{Path: cfg.SecretsFile},
@@ -81,7 +91,11 @@ func New(cfg *Config) (*Server, error) {
 		goos:    runtime.GOOS,
 		nss:     map[string]*nsRuntime{},
 	}
+	s.setp.Store(set)
 	s.runs = newRuns(s)
+	if err := s.runs.load(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -93,9 +107,13 @@ func (s *Server) SetSecrets(src secrets.Source) { s.secrets = src }
 func (s *Server) Run(ctx context.Context, apiListener net.Listener) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errc := make(chan error, 2*len(s.set.Namespaces)+1)
-	for _, name := range s.set.Names() {
-		if err := s.startNamespace(ctx, s.set.Namespaces[name], errc); err != nil {
+	errc := make(chan error, 16)
+	s.mu.Lock()
+	s.runCtx, s.errc = ctx, errc
+	s.mu.Unlock()
+	set := s.nsSet()
+	for _, name := range set.Names() {
+		if err := s.startNamespace(ctx, set.Namespaces[name], errc); err != nil {
 			return fmt.Errorf("namespace %s: %w", name, err)
 		}
 	}
@@ -128,14 +146,16 @@ func (s *Server) listen(name, kind string) (net.Listener, string, int, error) {
 	return l, "", l.Addr().(*net.TCPAddr).Port, nil
 }
 
-func (s *Server) startNamespace(ctx context.Context, ns *spec.Namespace, errc chan<- error) error {
-	rt := &nsRuntime{ns: ns}
+func (s *Server) startNamespace(parent context.Context, ns *spec.Namespace, errc chan<- error) error {
+	ctx, cancel := context.WithCancel(parent)
+	rt := &nsRuntime{ns: ns, cancel: cancel}
 	rt.proxy = egress.New(ns, s.secrets, s.log)
 	if s.proxyHook != nil {
 		s.proxyHook(rt.proxy)
 	}
 	pl, psock, pport, err := s.listen(ns.Name, "proxy")
 	if err != nil {
+		cancel()
 		return err
 	}
 	rt.proxySock, rt.proxyPort = psock, pport
@@ -145,11 +165,18 @@ func (s *Server) startNamespace(ctx context.Context, ns *spec.Namespace, errc ch
 	ml, msock, mport, err := s.listen(ns.Name, "mcp")
 	if err != nil {
 		pl.Close()
+		cancel()
 		return err
 	}
 	rt.mcpSock, rt.mcpPort = msock, mport
-	go func() { errc <- rt.proxy.Serve(ctx, pl) }()
-	go func() { errc <- rt.gateway.Serve(ctx, ml) }()
+	// A listener that fails while its namespace is still wanted stops nsctl.
+	report := func(err error) {
+		if err != nil && ctx.Err() == nil {
+			errc <- fmt.Errorf("namespace %s: %w", ns.Name, err)
+		}
+	}
+	go func() { report(rt.proxy.Serve(ctx, pl)) }()
+	go func() { report(rt.gateway.Serve(ctx, ml)) }()
 	s.mu.Lock()
 	s.nss[ns.Name] = rt
 	s.mu.Unlock()
@@ -160,6 +187,74 @@ func (s *Server) runtime(name string) *nsRuntime {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.nss[name]
+}
+
+// ReloadResult says what a reload changed.
+type ReloadResult struct {
+	Added, Updated, Removed []string
+}
+
+// Reload re-reads the declarations. If any file is invalid, nothing changes
+// and the error is returned: a half-applied set is never served. Updated
+// namespaces keep their endpoints (running agents stay connected) and get the
+// new rules at once. Removed namespaces have their runs stopped.
+func (s *Server) Reload() (ReloadResult, error) {
+	var res ReloadResult
+	set, err := spec.LoadDir(s.cfg.NamespacesDir, s.cfg.Home)
+	if err != nil {
+		return res, err
+	}
+	s.mu.Lock()
+	ctx, errc := s.runCtx, s.errc
+	s.mu.Unlock()
+	if ctx == nil {
+		return res, errors.New("not running")
+	}
+	old := s.nsSet()
+	for _, name := range set.Names() {
+		ns := set.Namespaces[name]
+		if rt := s.runtime(name); rt != nil {
+			s.mu.Lock()
+			rt.ns = ns
+			s.mu.Unlock()
+			rt.proxy.SetNamespace(ns)
+			rt.gateway.SetNamespace(ns)
+			res.Updated = append(res.Updated, name)
+			continue
+		}
+		if err := s.startNamespace(ctx, ns, errc); err != nil {
+			return res, fmt.Errorf("namespace %s: %w", name, err)
+		}
+		res.Added = append(res.Added, name)
+	}
+	s.setp.Store(set)
+	for _, name := range old.Names() {
+		if set.Namespaces[name] != nil {
+			continue
+		}
+		s.runs.stopNamespace(name)
+		s.mu.Lock()
+		rt := s.nss[name]
+		delete(s.nss, name)
+		s.mu.Unlock()
+		if rt != nil {
+			rt.cancel()
+		}
+		res.Removed = append(res.Removed, name)
+	}
+	s.log.Write(audit.Event{Kind: "reload", Allowed: true, Reason: fmt.Sprintf("added=%v updated=%v removed=%v", res.Added, res.Updated, res.Removed)})
+	return res, nil
+}
+
+// current returns the runtime and its current declaration together.
+func (s *Server) current(name string) (*nsRuntime, *spec.Namespace) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rt := s.nss[name]
+	if rt == nil {
+		return nil, nil
+	}
+	return rt, rt.ns
 }
 
 // baseEnv is the only environment a sandboxed process gets from nsctl. The
@@ -192,10 +287,10 @@ func getenvDefault(k, d string) string {
 	return d
 }
 
-func (s *Server) sandboxSpec(rt *nsRuntime, withMCP bool) sandbox.Spec {
+func (s *Server) sandboxSpec(rt *nsRuntime, ns *spec.Namespace, withMCP bool) sandbox.Spec {
 	sp := sandbox.Spec{
-		Writable:    append([]string{}, rt.ns.Filesystem.Writable...),
-		DenyRead:    append(append([]string{}, rt.ns.Filesystem.DenyRead...), s.cfg.AlwaysHidden()...),
+		Writable:    append([]string{}, ns.Filesystem.Writable...),
+		DenyRead:    append(append([]string{}, ns.Filesystem.DenyRead...), s.cfg.AlwaysHidden()...),
 		ProxySocket: rt.proxySock,
 		ProxyPort:   rt.proxyPort,
 		Self:        s.self,
@@ -208,11 +303,15 @@ func (s *Server) sandboxSpec(rt *nsRuntime, withMCP bool) sandbox.Spec {
 }
 
 func (s *Server) mcpCommand(rt *nsRuntime, srv *spec.MCPServer) (*exec.Cmd, error) {
-	sp := s.sandboxSpec(rt, false)
+	_, ns := s.current(rt.name())
+	if ns == nil {
+		return nil, errors.New("namespace removed")
+	}
+	sp := s.sandboxSpec(rt, ns, false)
 	sp.Command = srv.Command
 	sp.Workdir = "/tmp"
 	ep := sp.Plan(s.goos)
-	env := baseEnv(s.cfg.Home, ep, rt.ns.Name)
+	env := baseEnv(s.cfg.Home, ep, ns.Name)
 	keys := make([]string, 0, len(srv.Env))
 	for k := range srv.Env {
 		keys = append(keys, k)
@@ -239,8 +338,8 @@ func (s *Server) mcpCommand(rt *nsRuntime, srv *spec.MCPServer) (*exec.Cmd, erro
 }
 
 // agentCommand prepares a sandboxed agent run.
-func (s *Server) agentCommand(rt *nsRuntime, a *spec.Agent, prompt, runID string) (*exec.Cmd, error) {
-	sp := s.sandboxSpec(rt, len(rt.ns.MCP.Servers) > 0)
+func (s *Server) agentCommand(rt *nsRuntime, ns *spec.Namespace, a *spec.Agent, prompt, runID string) (*exec.Cmd, error) {
+	sp := s.sandboxSpec(rt, ns, len(ns.MCP.Servers) > 0)
 	sp.Workdir = a.Workdir
 	pubDir := filepath.Join(s.cfg.PublicDir(), runID)
 	if err := os.MkdirAll(pubDir, 0o700); err != nil {
@@ -249,7 +348,7 @@ func (s *Server) agentCommand(rt *nsRuntime, a *spec.Agent, prompt, runID string
 	mcpPath := filepath.Join(pubDir, "mcp.json")
 	sp.ReadFiles["mcp.json"] = mcpPath
 	ep := sp.Plan(s.goos)
-	cfgJSON, err := mcpgw.ConfigJSON(rt.ns, ep.MCP)
+	cfgJSON, err := mcpgw.ConfigJSON(ns, ep.MCP)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +365,7 @@ func (s *Server) agentCommand(rt *nsRuntime, a *spec.Agent, prompt, runID string
 		}
 	}
 	sp.Command = argv
-	env := baseEnv(s.cfg.Home, ep, rt.ns.Name)
+	env := baseEnv(s.cfg.Home, ep, ns.Name)
 	keys := make([]string, 0, len(a.Env))
 	for k := range a.Env {
 		keys = append(keys, k)

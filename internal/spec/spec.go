@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -135,6 +136,12 @@ type Agent struct {
 	Command []string          `yaml:"command"`
 	Workdir string            `yaml:"workdir"`
 	Env     map[string]string `yaml:"env"`
+	// Timeout stops a run after this long ("30m", "2h"). Empty means the
+	// server's default.
+	Timeout string `yaml:"timeout"`
+
+	// TimeoutDur is Timeout parsed (0 = server default).
+	TimeoutDur time.Duration `yaml:"-"`
 }
 
 // Placeholders that may appear in Agent.Command.
@@ -395,6 +402,13 @@ func (ns *Namespace) Validate(home string) error {
 			if !envRe.MatchString(k) {
 				bad("%s.env: %q is not a valid variable name", f, k)
 			}
+		}
+		if a.Timeout != "" {
+			d, err := time.ParseDuration(a.Timeout)
+			if err != nil || d <= 0 {
+				bad("%s: timeout %q must be a positive duration like 30m", f, a.Timeout)
+			}
+			ns.Agents[i].TimeoutDur = d
 		}
 	}
 	return errors.Join(errs...)

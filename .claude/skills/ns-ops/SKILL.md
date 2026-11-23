@@ -18,7 +18,7 @@ description: nsctl を運用するときに使う。namespace の追加・変更
 3. 必要最小限にする: 通信の `allow` は host と port を具体的に。認証情報の経路の `rules` はメソッドとパスを具体的に。MCP の `tools` は名前を全部書く。
 4. `go run ./cmd/nsctl validate -config <設定>` を流す。
 5. PR の本文に「何を許すか」「なぜ要るか」を書く。許可を広げる PR はタイトルに `[access]` を付け、人に知らせる。
-6. merge 後、サーバーを再起動して反映する(`nsctl serve` は起動時に宣言を読む)。
+6. merge 後、`kill -HUP <nsctl の pid>` で宣言を読み直す。1 つでも不正なファイルがあれば何も変わらず、ログにエラーが出る。消した namespace の実行は止まる。
 
 ## 秘密(認証情報)を足す
 
@@ -46,11 +46,13 @@ nsctl whoami
 nsctl namespaces
 nsctl run <namespace> <agent> "<指示>"
 nsctl runs <namespace>
-nsctl logs <namespace> <run-id>
+nsctl logs <namespace> <run-id> [-f]       # -f で終わるまで追いかける
 nsctl stop <namespace> <run-id>
 nsctl audit <namespace>                    # admin だけ
 ```
 
+- 実行には時間制限がある(agent の `timeout`、無ければ設定の `default_run_timeout`、既定 1 時間)。出力は `max_log_bytes`(既定 10 MiB)で切る。
+- 実行の記録は `state_dir/private/runs/<id>/run.json` に残る。`nsctl` を止めたときに動いていた実行は、次の起動で `lost` になる。
 - 外の機械から API を使うときは、手前に TLS(リバースプロキシや Tailscale)を置き、`-allow-remote` を付ける。TLS なしで外に開かない。
 - Linux は `bwrap` が要る。macOS は `sandbox-exec`(OS に入っている)。どちらも無いときは起動に失敗する。失敗を避けるためにサンドボックスを外す変更をしない。
 

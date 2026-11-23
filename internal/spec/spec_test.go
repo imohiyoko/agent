@@ -67,6 +67,8 @@ func TestValidateRejects(t *testing.T) {
 		"duplicate member":         {func(n *Namespace) { n.Members = append(n.Members, n.Members[0]) }, "twice"},
 		"bad version":              {func(n *Namespace) { n.Version = 2 }, "version"},
 		"bad name":                 {func(n *Namespace) { n.Name = "Research" }, "name"},
+		"bad timeout":              {func(n *Namespace) { n.Agents[0].Timeout = "soon" }, "timeout"},
+		"negative timeout":         {func(n *Namespace) { n.Agents[0].Timeout = "-1m" }, "timeout"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
