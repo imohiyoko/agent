@@ -73,13 +73,3 @@ func checkValue(dec *json.Decoder, depth int) error {
 	_, err = dec.Token() // closing delimiter
 	return err
 }
-
-// sameID reports whether two JSON-RPC ids are the same value, whatever
-// their spelling ("a" and "a", 1 and 1.0).
-func sameID(a, b json.RawMessage) bool {
-	var x, y any
-	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
-		return false
-	}
-	return x == y
-}

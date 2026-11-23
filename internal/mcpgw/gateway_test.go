@@ -148,7 +148,7 @@ func TestConfigJSON(t *testing.T) {
 	}
 }
 
-func TestDecodeStrictAndSameID(t *testing.T) {
+func TestDecodeStrict(t *testing.T) {
 	for _, b := range []string{`{"a":1,"a":2}`, `{"x":{"k":1,"K":2}}`, `[{"a":1,"A":1}]`, `{"a":1} {}`} {
 		var m message
 		if decodeStrict([]byte(b), &m) == nil {
@@ -159,12 +159,6 @@ func TestDecodeStrictAndSameID(t *testing.T) {
 	if err := decodeStrict([]byte(`{"jsonrpc":"2.0","id":1,"method":"x","params":{"a":[{"b":1},{"b":2}]}}`), &m); err != nil {
 		t.Errorf("valid message rejected: %v", err)
 	}
-	if !sameID(json.RawMessage(`"a"`), json.RawMessage(`"\u0061"`)) || !sameID(json.RawMessage(`1`), json.RawMessage(`1.0`)) {
-		t.Error("equal ids must match")
-	}
-	if sameID(json.RawMessage(`1`), json.RawMessage(`"1"`)) {
-		t.Error("number and string ids must differ")
-	}
 }
 
 func TestRelaySSEMultiLineAndCap(t *testing.T) {
@@ -172,7 +166,7 @@ func TestRelaySSEMultiLineAndCap(t *testing.T) {
 	srv := &spec.MCPServer{Name: "r", Tools: []string{"read_file"}}
 	in := "id: 1\ndata: {\"jsonrpc\":\"2.0\",\ndata: \"id\":1,\"result\":{}}\n\n"
 	rec := httptest.NewRecorder()
-	g.relaySSE(rec, strings.NewReader(in), srv, json.RawMessage(`1`), false)
+	g.relaySSE(rec, strings.NewReader(in), srv, false)
 	want := "id: 1\ndata: {\"jsonrpc\":\"2.0\",\ndata: \"id\":1,\"result\":{}}\n\n"
 	if rec.Body.String() != want {
 		t.Fatalf("got %q, want %q", rec.Body.String(), want)
@@ -180,7 +174,7 @@ func TestRelaySSEMultiLineAndCap(t *testing.T) {
 
 	big := strings.Repeat("data: "+strings.Repeat("x", 1<<20)+"\n", 20) + "\n"
 	rec = httptest.NewRecorder()
-	g.relaySSE(rec, strings.NewReader(big), srv, nil, false)
+	g.relaySSE(rec, strings.NewReader(big), srv, false)
 	if rec.Body.Len() != 0 {
 		t.Fatalf("an event over the cap must not be relayed (%d bytes out)", rec.Body.Len())
 	}
