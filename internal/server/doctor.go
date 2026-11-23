@@ -194,18 +194,30 @@ func claudeAuthProblems(ns *spec.Namespace, a *spec.Agent) []string {
 		out = append(out, "both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set; Claude Code uses the API key, so set only one")
 	}
 	base, ok := a.Env["ANTHROPIC_BASE_URL"]
+	// Both forms of a route are fine: http://<route>.creds.internal and
+	// {creds_url}/<route>.
 	if !ok {
 		if apiKey || oauth {
 			out = append(out, "ANTHROPIC_BASE_URL is not set; set it to http://<route>"+spec.CredsSuffix+" so the proxy adds the real key")
 		}
 		return out
 	}
-	host, isHTTP := strings.CutPrefix(base, "http://")
-	route, isRoute := strings.CutSuffix(strings.TrimSuffix(host, "/"), spec.CredsSuffix)
-	if !isHTTP || !isRoute || ns.Credential(route) == nil {
+	if route, ok := baseURLRoute(base); !ok || ns.Credential(route) == nil {
 		out = append(out, fmt.Sprintf("ANTHROPIC_BASE_URL %q is not a credential route of this namespace (http://<route>%s)", base, spec.CredsSuffix))
 	}
 	return out
+}
+
+// baseURLRoute returns the route a base URL names, in either form:
+// http://<route>.creds.internal[/] or {creds_url}/<route>[/].
+func baseURLRoute(base string) (string, bool) {
+	base = strings.TrimSuffix(base, "/")
+	if rest, ok := strings.CutPrefix(base, spec.CredsURLPlaceholder+"/"); ok && !strings.Contains(rest, "/") {
+		return rest, true
+	}
+	host, isHTTP := strings.CutPrefix(base, "http://")
+	route, isRoute := strings.CutSuffix(host, spec.CredsSuffix)
+	return route, isHTTP && isRoute
 }
 
 // routeRe finds credential-route URLs in env values (any agent: Codex CLI's

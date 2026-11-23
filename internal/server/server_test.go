@@ -573,6 +573,8 @@ func TestClaudeAuthProblems(t *testing.T) {
 	}{
 		{map[string]string{"ANTHROPIC_BASE_URL": "http://claude.creds.internal", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, ""},
 		{map[string]string{"ANTHROPIC_BASE_URL": "http://claude.creds.internal/", "ANTHROPIC_API_KEY": "p"}, ""},
+		{map[string]string{"ANTHROPIC_BASE_URL": "{creds_url}/claude", "ANTHROPIC_API_KEY": "p"}, ""},
+		{map[string]string{"ANTHROPIC_BASE_URL": "{creds_url}/other", "ANTHROPIC_API_KEY": "p"}, "not a credential route"},
 		{map[string]string{"ANTHROPIC_BASE_URL": "http://claude.creds.internal", "ANTHROPIC_API_KEY": "p", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, "set only one"},
 		{map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "p"}, "ANTHROPIC_BASE_URL is not set"},
 		{map[string]string{"ANTHROPIC_BASE_URL": "http://other.creds.internal", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, "not a credential route"},
