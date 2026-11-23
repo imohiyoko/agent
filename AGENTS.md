@@ -8,6 +8,10 @@
 - [docs/design.md](docs/design.md): 何を作り、どこに何を置くか。崩してはいけない性質
 - [docs/review.md](docs/review.md): レビューの観点。PR を出す前に自分でも確かめる
 - [docs/adr/](docs/adr/): 設計の決定
+- [.claude/skills/](.claude/skills/): 手順のスキル。変更を始める・PR を出す・merge するときは `repo-guard`、レビューは `pr-review`、ADR は `adr-write`、運用は `ns-ops`
+
+このリポジトリは、agent が構築・管理・運用する前提で作っている(2026-11-23、imohiyoko)。人が常に見ているとは限らないので、
+決まりを守れたことを PR の本文と CI の結果で示す。PR を出す前に `bash scripts/check.sh` を流す。
 
 この文書は「お願い」であって強制ではありません。強制は、最終的にこのリポジトリが作る仕組み(環境で能力を持たせない)で行います。
 それまでの間、この文書と GitHub のブランチ保護で秩序を保ちます。
@@ -15,7 +19,7 @@
 ## 1. 変更の進め方
 
 - **main に直接 push しない。** 作業は必ずブランチで行い、PR を出す。ブランチ名は `<種類>/<短い説明>`(例 `docs/namespace-model`、`feat/egress-proxy`)。
-- **merge するのは人だけ。** agent は PR を approve も merge もしない。自分の PR の auto-merge も設定しない。
+- **merge は、人が許したときだけ agent がしてよい。** 2026-11-23 に imohiyoko が「マージは勝手にやっていい」と許した。merge の前に、CI が通っていることと [docs/review.md](docs/review.md) の 1〜3 を自分で確かめる。approve はしない(自分の PR を自分で承認しない)。
 - 1 つの PR は 1 つの目的にする。関係のない整形・リネームを混ぜない。
 - PR の本文には「何を変えたか」「なぜか」「どう確かめたか」を書く。確かめていないことは「未確認」と書く。
 - 設計の決定(土台にする OSS、namespace の定義、認証の方式、通信の制限の方式など)は、コードより先に `docs/adr/` に ADR を書き、人の決定をもらってから実装する。
