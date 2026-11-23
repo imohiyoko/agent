@@ -8,6 +8,10 @@
 - [docs/design.md](docs/design.md): 何を作り、どこに何を置くか。崩してはいけない性質
 - [docs/review.md](docs/review.md): レビューの観点。PR を出す前に自分でも確かめる
 - [docs/adr/](docs/adr/): 設計の決定
+- [.claude/skills/](.claude/skills/): 手順のスキル。変更を始める・PR を出す・merge するときは `repo-guard`、レビューは `pr-review`、ADR は `adr-write`、運用は `ns-ops`
+
+このリポジトリは、agent が構築・管理・運用する前提で作っている(2026-11-23、imohiyoko)。人が常に見ているとは限らないので、
+決まりを守れたことを PR の本文と CI の結果で示す。PR を出す前に `bash scripts/check.sh` を流す。
 
 この文書は「お願い」であって強制ではありません。強制は、最終的にこのリポジトリが作る仕組み(環境で能力を持たせない)で行います。
 それまでの間、この文書と GitHub のブランチ保護で秩序を保ちます。
