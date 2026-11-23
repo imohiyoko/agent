@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -141,6 +142,9 @@ func Doctor(c *Config, w io.Writer) int {
 			if _, err := exec.LookPath(a.Command[0]); err != nil {
 				line("fail", "%s: agent %s: command %s not found", name, a.Name, a.Command[0])
 			}
+			for _, msg := range routeProblems(ns, &a) {
+				line("warn", "%s: agent %s: %s", name, a.Name, msg)
+			}
 			for _, msg := range claudeAuthProblems(ns, &a) {
 				line("warn", "%s: agent %s: %s", name, a.Name, msg)
 			}
@@ -200,6 +204,41 @@ func claudeAuthProblems(ns *spec.Namespace, a *spec.Agent) []string {
 	route, isRoute := strings.CutSuffix(strings.TrimSuffix(host, "/"), spec.CredsSuffix)
 	if !isHTTP || !isRoute || ns.Credential(route) == nil {
 		out = append(out, fmt.Sprintf("ANTHROPIC_BASE_URL %q is not a credential route of this namespace (http://<route>%s)", base, spec.CredsSuffix))
+	}
+	return out
+}
+
+// routeRe finds credential-route URLs in env values (any agent: Codex CLI's
+// OPENAI_BASE_URL, Gemini CLI's GOOGLE_GEMINI_BASE_URL, ...).
+var (
+	routeRe     = regexp.MustCompile(`https?://([a-z0-9-]+)` + regexp.QuoteMeta(spec.CredsSuffix))
+	credsPathRe = regexp.MustCompile(regexp.QuoteMeta(spec.CredsURLPlaceholder) + `/([a-z0-9-]+)`)
+)
+
+// routeProblems finds env values that name a credential route the namespace
+// does not have, or reach one over https (the proxy only takes plain http
+// for routes; it adds TLS itself).
+func routeProblems(ns *spec.Namespace, a *spec.Agent) []string {
+	var out []string
+	keys := make([]string, 0, len(a.Env))
+	for k := range a.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, m := range routeRe.FindAllStringSubmatch(a.Env[k], -1) {
+			switch {
+			case strings.HasPrefix(m[0], "https://"):
+				out = append(out, fmt.Sprintf("%s uses %s; credential routes take http:// (the proxy adds TLS)", k, m[0]))
+			case ns.Credential(m[1]) == nil:
+				out = append(out, fmt.Sprintf("%s names route %q, which this namespace does not declare", k, m[1]))
+			}
+		}
+		for _, m := range credsPathRe.FindAllStringSubmatch(a.Env[k], -1) {
+			if ns.Credential(m[1]) == nil {
+				out = append(out, fmt.Sprintf("%s names route %q, which this namespace does not declare", k, m[1]))
+			}
+		}
 	}
 	return out
 }

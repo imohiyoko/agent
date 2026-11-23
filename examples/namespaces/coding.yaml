@@ -1,0 +1,96 @@
+# Claude 以外の coding agent(Codex CLI、Gemini CLI、Aider)を動かす namespace の例。
+# 手順と、確かめたこと・確かめていないことは docs/agents.md を見る。
+version: 1
+name: coding
+
+members:
+  - principal: imohiyoko
+    role: operator
+
+network:
+  allow: []
+
+# どの agent も、API には {creds_url}/<経路>(= http://127.0.0.1:3128/creds/<経路> など)で繋ぐ。
+# proxy が規則を確かめ、本物の鍵を付けて https で送る。agent に鍵は渡らない。
+credentials:
+  # OpenAI(Codex CLI は /v1/responses、Aider は /v1/chat/completions)
+  - name: openai
+    upstream: https://api.openai.com
+    header: Authorization
+    format: "Bearer {value}"
+    secret: coding/openai
+    rules:
+      - methods: [POST]
+        paths: ["/v1/responses", "/v1/chat/completions"]
+      - methods: [GET]
+        paths: ["/v1/models", "/v1/models/*"]
+  # Gemini API(Gemini CLI は x-goog-api-key で鍵を送る)
+  - name: gemini
+    upstream: https://generativelanguage.googleapis.com
+    header: x-goog-api-key
+    secret: coding/gemini
+    rules:
+      - methods: [POST, GET]
+        paths: ["/v1beta/models/**"]
+
+filesystem:
+  writable:
+    - ~/work/coding
+    - ~/agents/coding
+
+mcp:
+  servers:
+    - name: files
+      command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      tools: [read_file, list_directory]
+
+agents:
+  # OpenAI Codex CLI。API の宛先と MCP は -c で設定を上書きして渡す
+  - name: codex
+    command:
+      - codex
+      - exec
+      - --skip-git-repo-check
+      - -c
+      - openai_base_url="{creds_url}/openai/v1"
+      - -c
+      - mcp_servers.files.url="{mcp_url}/files"
+      - -c
+      - check_for_update_on_startup=false
+      - -c
+      - analytics.enabled=false
+      - "{prompt}"
+    interactive:
+      - codex
+      - -c
+      - openai_base_url="{creds_url}/openai/v1"
+      - -c
+      - mcp_servers.files.url="{mcp_url}/files"
+      - -c
+      - check_for_update_on_startup=false
+      - -c
+      - analytics.enabled=false
+    workdir: ~/work/coding
+    home: ~/agents/coding
+    env:
+      OPENAI_API_KEY: placeholder-replaced-by-proxy
+
+  # Google Gemini CLI。宛先は loopback の http でなければならない(https 以外は loopback だけ許す)
+  - name: gemini
+    command: ["gemini", "-p", "{prompt}"]
+    interactive: ["gemini"]
+    workdir: ~/work/coding
+    home: ~/agents/coding
+    env:
+      GOOGLE_GEMINI_BASE_URL: "{creds_url}/gemini"
+      GEMINI_API_KEY: placeholder-replaced-by-proxy
+
+  # Aider(OpenAI 互換の API)。MCP は持たない。モデル名は例
+  - name: aider
+    command: ["aider", "--model", "openai/gpt-5", "--yes-always", "--no-check-update", "--analytics-disable", "--message", "{prompt}"]
+    interactive: ["aider", "--model", "openai/gpt-5", "--no-check-update", "--analytics-disable"]
+    workdir: ~/work/coding
+    home: ~/agents/coding
+    env:
+      OPENAI_API_BASE: "{creds_url}/openai/v1"
+      OPENAI_API_KEY: placeholder-replaced-by-proxy

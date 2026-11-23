@@ -7,6 +7,7 @@ agent 自身には認証を持たせない。agent ができることは、入�
 - ここで作業する agent の決まり: [AGENTS.md](AGENTS.md)
 - 動く環境: macOS(`sandbox-exec`)と Linux(`bwrap` が要る)
 - Claude Code を中で動かす(API キー、Max / Pro プラン、対話の `nsctl shell`): [docs/claude-code.md](docs/claude-code.md)
+- Claude 以外の coding agent(Codex CLI、Gemini CLI、Aider、OpenCode): [docs/agents.md](docs/agents.md)
 - cmux と組み合わせる: [docs/cmux.md](docs/cmux.md)
 - 運用(点検、常駐、トークン、事故のとき): [.claude/skills/ns-ops/SKILL.md](.claude/skills/ns-ops/SKILL.md)
 
