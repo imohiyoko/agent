@@ -15,7 +15,7 @@
 ## 1. 変更の進め方
 
 - **main に直接 push しない。** 作業は必ずブランチで行い、PR を出す。ブランチ名は `<種類>/<短い説明>`(例 `docs/namespace-model`、`feat/egress-proxy`)。
-- **merge するのは人だけ。** agent は PR を approve も merge もしない。自分の PR の auto-merge も設定しない。
+- **merge は、人が許したときだけ agent がしてよい。** 2026-11-23 に imohiyoko が「マージは勝手にやっていい」と許した。merge の前に、CI が通っていることと [docs/review.md](docs/review.md) の 1〜3 を自分で確かめる。approve はしない(自分の PR を自分で承認しない)。
 - 1 つの PR は 1 つの目的にする。関係のない整形・リネームを混ぜない。
 - PR の本文には「何を変えたか」「なぜか」「どう確かめたか」を書く。確かめていないことは「未確認」と書く。
 - 設計の決定(土台にする OSS、namespace の定義、認証の方式、通信の制限の方式など)は、コードより先に `docs/adr/` に ADR を書き、人の決定をもらってから実装する。
