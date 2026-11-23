@@ -67,8 +67,13 @@ func TestValidateRejects(t *testing.T) {
 		"duplicate member":         {func(n *Namespace) { n.Members = append(n.Members, n.Members[0]) }, "twice"},
 		"bad version":              {func(n *Namespace) { n.Version = 2 }, "version"},
 		"bad name":                 {func(n *Namespace) { n.Name = "Research" }, "name"},
-		"bad timeout":              {func(n *Namespace) { n.Agents[0].Timeout = "soon" }, "timeout"},
-		"negative timeout":         {func(n *Namespace) { n.Agents[0].Timeout = "-1m" }, "timeout"},
+		"mcp neither":              {func(n *Namespace) { n.MCP.Servers[0].Command = nil }, "set command"},
+		"mcp both":                 {func(n *Namespace) { n.MCP.Servers[0].Credential = "github" }, "not both"},
+		"mcp unknown route": {func(n *Namespace) {
+			n.MCP.Servers[0].Command, n.MCP.Servers[0].Env, n.MCP.Servers[0].Credential = nil, nil, "nope"
+		}, "not a credential route"},
+		"bad timeout":      {func(n *Namespace) { n.Agents[0].Timeout = "soon" }, "timeout"},
+		"negative timeout": {func(n *Namespace) { n.Agents[0].Timeout = "-1m" }, "timeout"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

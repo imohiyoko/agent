@@ -25,6 +25,15 @@ credentials:
     rules:
       - methods: [POST]
         paths: ["/v1/messages", "/v1/messages/count_tokens"]
+  # リモートの MCP server 用の経路。MCP server が使う経路は gateway だけが使える
+  - name: github-mcp
+    upstream: https://api.githubcopilot.com
+    header: Authorization
+    format: "Bearer {value}"
+    secret: research/github
+    rules:
+      - methods: [POST, DELETE]
+        paths: ["/mcp", "/mcp/"]
   - name: github
     upstream: https://api.github.com
     header: Authorization
@@ -48,6 +57,10 @@ mcp:
     - name: files
       command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
       tools: [read_file, list_directory]
+    - name: github
+      credential: github-mcp
+      path: /mcp/
+      tools: [get_file_contents, list_issues, search_code]
 
 agents:
   - name: claude

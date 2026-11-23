@@ -15,7 +15,7 @@ description: このリポジトリの PR(自分のものを含む)をレビュ�
    - 宣言の検査(`internal/spec/spec.go` の `Validate`)が緩んでいないか。
    - proxy(`internal/egress`)が、拒否の前に通信してしまう順序になっていないか。loopback などへの接続の拒否が残っているか。
    - サンドボックス(`internal/sandbox`)の引数・規則から、拒否や隠す設定が消えていないか。失敗したときに制限なしで動く分岐が増えていないか。
-   - MCP gateway(`internal/mcpgw`)で、許していない tool やメソッドが server に届く経路ができていないか。
+   - MCP gateway(`internal/mcpgw`)で、許していない tool やメソッドが server に届く経路ができていないか。MCP server が使う認証情報の経路を、agent が直接呼べるようになっていないか(gateway-only)。
    - API(`internal/server/api.go`)の新しい入口が、`s.ns(<操作>, ...)` を通っているか。
 4. 疑わしい点は、実際に確かめる。テストを書いて流すか、`bash scripts/check.sh` を流す。確かめられなければ「未確認」と書く。
 5. 指摘を残す。

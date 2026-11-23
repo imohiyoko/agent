@@ -33,11 +33,15 @@ type Starter func(s *spec.MCPServer) (*exec.Cmd, error)
 
 // Gateway serves one namespace.
 type Gateway struct {
-	ns      atomic.Pointer[spec.Namespace]
-	start   Starter
-	log     *audit.Log
-	idle    time.Duration
-	timeout time.Duration
+	ns    atomic.Pointer[spec.Namespace]
+	start Starter
+	// remote sends requests through the namespace's own proxy, for servers
+	// reached by a credential route.
+	remote    *http.Client
+	remoteKey string
+	log       *audit.Log
+	idle      time.Duration
+	timeout   time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -49,6 +53,12 @@ func New(ns *spec.Namespace, start Starter, log *audit.Log) *Gateway {
 	g.ns.Store(ns)
 	return g
 }
+
+// SetRemote sets the client used for remote servers. It must send requests
+// through this namespace's proxy (never directly).
+// key is sent as egress.GatewayHeader so the proxy lets the gateway (and
+// only the gateway) use gateway-only credential routes.
+func (g *Gateway) SetRemote(c *http.Client, key string) { g.remote, g.remoteKey = c, key }
 
 // SetNamespace replaces the rules. Running sessions pick them up on their
 // next message.
@@ -114,6 +124,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok || srv == nil {
 		g.record(name, "connect", "", false, "no such server in this namespace")
 		http.Error(w, "nsctl: no MCP server "+name+" in this namespace", http.StatusNotFound)
+		return
+	}
+	if srv.Credential != "" {
+		g.serveRemote(w, r, srv)
 		return
 	}
 	switch r.Method {

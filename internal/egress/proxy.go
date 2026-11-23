@@ -15,6 +15,7 @@ package egress
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +33,9 @@ import (
 	"github.com/imohiyoko/agent/internal/spec"
 )
 
+// GatewayHeader carries Proxy.GatewayKey.
+const GatewayHeader = "X-Nsctl-Gateway"
+
 // Proxy serves one namespace.
 type Proxy struct {
 	ns      atomic.Pointer[spec.Namespace]
@@ -44,6 +48,11 @@ type Proxy struct {
 	// upstream, if set, picks the HTTP proxy nsctl itself must use for a URL
 	// (for networks where nsctl cannot connect out directly).
 	upstream func(*http.Request) (*url.URL, error)
+
+	// GatewayKey, if set, must be sent in the GatewayHeader by callers of
+	// gateway-only credential routes (see spec.Namespace.GatewayOnly). Only
+	// the MCP gateway in the nsctl process knows it.
+	GatewayKey string
 
 	// AllowLoopback is for tests only: it lets the proxy reach test servers
 	// on 127.0.0.1.
@@ -250,6 +259,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
 	removeHopHeaders(out.Header)
+	out.Header.Del(GatewayHeader)
 	resp, err := p.tr.RoundTrip(out)
 	if err != nil {
 		p.record("egress", r.Method, host, false, err.Error())
@@ -308,6 +318,14 @@ func (p *Proxy) credential(w http.ResponseWriter, r *http.Request, name string) 
 		deny(w, http.StatusForbidden, "no credential route "+name+" in this namespace")
 		return
 	}
+	if ns.GatewayOnly(name) {
+		got := r.Header.Get(GatewayHeader)
+		if p.GatewayKey == "" || subtle.ConstantTimeCompare([]byte(got), []byte(p.GatewayKey)) != 1 {
+			p.record("credential", r.Method, target, false, "route is only for the MCP gateway")
+			deny(w, http.StatusForbidden, "credential route "+name+" is only usable through the MCP gateway")
+			return
+		}
+	}
 	if !c.Allow(r.Method, r.URL.Path) {
 		p.record("credential", r.Method, target, false, "not in rules")
 		deny(w, http.StatusForbidden, r.Method+" "+r.URL.Path+" is not allowed for "+name)
@@ -342,6 +360,7 @@ func (p *Proxy) credential(w http.ResponseWriter, r *http.Request, name string) 
 	}
 	out.Host = up.Host
 	removeHopHeaders(out.Header)
+	out.Header.Del(GatewayHeader)
 	format := c.Format
 	if format == "" {
 		format = "{value}"
