@@ -677,9 +677,10 @@ func TestRouteProblems(t *testing.T) {
 		"GOOGLE_GEMINI_BASE_URL": "http://gemini.creds.internal",
 		"X_BASE_URL":             "{creds_url}/missing",
 		"Y_BASE_URL":             "{creds_url}/openai",
+		"Z_BASE_URL":             "{creds_url}/openai_backup/v1",
 		"OTHER":                  "https://openai.creds.internal/v1",
 	}}), "; ")
-	for _, want := range []string{`route "gemini"`, "OTHER uses https://", `route "missing"`} {
+	for _, want := range []string{`route "gemini"`, "OTHER uses https://", `route "missing"`, `route "openai_backup"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("got %q, want %q", got, want)
 		}

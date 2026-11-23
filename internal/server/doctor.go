@@ -211,8 +211,8 @@ func claudeAuthProblems(ns *spec.Namespace, a *spec.Agent) []string {
 // routeRe finds credential-route URLs in env values (any agent: Codex CLI's
 // OPENAI_BASE_URL, Gemini CLI's GOOGLE_GEMINI_BASE_URL, ...).
 var (
-	routeRe     = regexp.MustCompile(`https?://([a-z0-9-]+)` + regexp.QuoteMeta(spec.CredsSuffix))
-	credsPathRe = regexp.MustCompile(regexp.QuoteMeta(spec.CredsURLPlaceholder) + `/([a-z0-9-]+)`)
+	routeRe     = regexp.MustCompile(`https?://([^/\s"'.:]+)` + regexp.QuoteMeta(spec.CredsSuffix))
+	credsPathRe = regexp.MustCompile(regexp.QuoteMeta(spec.CredsURLPlaceholder) + `/([^/\s"'?#]*)`)
 )
 
 // routeProblems finds env values that name a credential route the namespace

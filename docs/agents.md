@@ -8,6 +8,8 @@ nsctl の境界(サンドボックス、通信の制限、認証情報の経路�
 
 例: [examples/namespaces/coding.yaml](../examples/namespaces/coding.yaml)(Codex CLI、Gemini CLI、Aider)。Claude Code は [claude-code.md](claude-code.md)。
 
+agent や MCP server のコマンドは、前もって入れておく。サンドボックスの中からは、`network.allow` に無い npm や PyPI に繋げない。`npx -y <package>` のような実行時の取得は失敗する。
+
 ## nsctl が agent に渡すもの
 
 | 置き換え(`command`・`interactive`・`env` の値に書く) | 環境変数(いつも入る) | 中身(Linux の例) |
@@ -25,7 +27,10 @@ nsctl の境界(サンドボックス、通信の制限、認証情報の経路�
 - `NO_PROXY=127.0.0.1,localhost` が入っている。loopback(proxy と gateway)には直接繋ぐ。サンドボックスの中から loopback で届くのは、その namespace の proxy と gateway だけ。
 - MCP の gateway の tool の制限は、どの agent から使っても同じ。
 
-`nsctl doctor` は、env の値が指す経路が宣言に無いとき、または `https://<name>.creds.internal` と書いたとき(経路は http で送る。TLS は proxy が付ける)に警告する。
+`nsctl doctor` は、agent の env の値を見て、次のときに警告する。
+
+- 指している経路が宣言に無い。調べるのは `{creds_url}/<name>` と `http://<name>.creds.internal` の形だけ。`http://127.0.0.1:3128/creds/<name>` のように書き写した URL は見ない(書き写さずに置き換えを使う)。
+- `https://<name>.creds.internal` と書いた。経路は http で送り、TLS は proxy が付ける。
 
 ## agent ごとの設定
 
@@ -57,11 +62,11 @@ nsctl の境界(サンドボックス、通信の制限、認証情報の経路�
 | API の宛先 | `GOOGLE_GEMINI_BASE_URL: "{creds_url}/gemini"` |
 | 送る先 | `POST /v1beta/models/<model>:streamGenerateContent?alt=sse` など |
 | 鍵 | `GEMINI_API_KEY` を `x-goog-api-key` で送る。経路は `header: x-goog-api-key` |
-| MCP | `~/.gemini/settings.json`(agent の `home` の中)に `{"mcpServers": {"<name>": {"httpUrl": "http://127.0.0.1:3129/mcp/<name>"}}}`。コマンドで渡す方法は無い |
+| MCP | `~/.gemini/settings.json`(agent の `home` の中)に `{"mcpServers": {"<name>": {"httpUrl": "${NSCTL_MCP_URL}/<name>"}}}`。コマンドで渡す方法は無い |
 | 止めておく通信 | 同じ `settings.json` に `"privacy": {"usageStatisticsEnabled": false}`、`"general": {"enableAutoUpdate": false, "enableAutoUpdateNotification": false}` |
 
 - 宛先は https か loopback でなければならない。`http://gemini.creds.internal` は Gemini CLI が拒否するので、`{creds_url}` を使う。
-- MCP の URL を `settings.json` に書き写すので、macOS では port が変わる。`env | grep NSCTL_MCP_URL` で中から確かめる。
+- Gemini CLI は `settings.json` の文字列の中の `${VAR}` を環境変数で置き換える(レビューでの指摘による。未確認)。`${NSCTL_MCP_URL}` を使えば、macOS で port が変わっても書き直さずに済む。効かないときは、中で `env | grep NSCTL_MCP_URL` を見て URL を書く。
 - **Google アカウントでのログイン**: proxy に持たせる方法は無い。
   - 通信先は Code Assist(`cloudcode-pa.googleapis.com`)で、渡せるトークンは短い時間で切れる。
   - API の鍵を使うこと。

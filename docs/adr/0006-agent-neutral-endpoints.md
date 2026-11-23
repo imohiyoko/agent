@@ -14,7 +14,7 @@
 - **決定**
   1. proxy は、直接呼ばれたとき `/creds/<name>/<path>` でも経路を受ける。`http://<name>.creds.internal/<path>` と同じ処理で、規則・gateway だけの経路・監査も同じ。
   2. 置き換え `{creds_url}`(例 `http://127.0.0.1:3128/creds`)と `{mcp_url}`(例 `http://127.0.0.1:3129/mcp`)を足す。`command`・`interactive`・`env` の値で使える。
-  3. 環境変数 `NSCTL_CREDS_URL`・`NSCTL_MCP_URL` をいつも渡す。
+  3. 環境変数 `NSCTL_CREDS_URL` をいつも渡す。`NSCTL_MCP_URL` は、その namespace に MCP の server があるときに渡す。
   4. `NO_PROXY=127.0.0.1,localhost` にする。loopback(proxy と gateway)には proxy を通さずに繋ぐ。
   5. `nsctl doctor` は、env の値が指す経路が宣言に無いとき、または https で書いたときに警告する。
 - agent ごとの設定の書き方は [docs/agents.md](../agents.md) に置く。agent ごとの特別な処理は nsctl に入れない。
@@ -23,6 +23,15 @@
 
 - 置き換えと環境変数だけなら、新しい agent が出ても nsctl のコードは変えずに済む。宣言と文書で対応できる。
 - `/creds/` の口は、agent ができることを広げない。どの経路を使えるかも、経路の規則も、これまでと同じ。
+
+## 限界(この決定で守れないこと)
+
+- **agent の中でログインしたトークン**: 守れない。Codex CLI(ChatGPT)や Gemini CLI(Google アカウント)をサンドボックスの中でログインして使うと、トークンは agent の HOME に置かれ、agent が読める。proxy に持たせられるのは、長く使える鍵やトークンだけ。
+- **agent が設定を無視すること**: 防げない。ただし、agent が宛先や鍵の設定を無視しても、届く先は変わらない。
+  - 通信は proxy と gateway しか通らず、規則も同じ。
+  - agent の手元に本物の鍵は無い。
+- **実際の agent で動くこと**: Claude Code のほかは確かめていない(下の「確認の状態」)。
+- **ファイルに書き写した URL**: macOS では port が namespace ごと・起動ごとに変わりうる。`settings.json` や `opencode.json` に書き写した URL は古くなる。置き換えか環境変数を使う。
 
 ## `NO_PROXY` を loopback にしてよい理由
 
