@@ -72,9 +72,11 @@ func TestValidateRejects(t *testing.T) {
 		"mcp unknown route": {func(n *Namespace) {
 			n.MCP.Servers[0].Command, n.MCP.Servers[0].Env, n.MCP.Servers[0].Credential = nil, nil, "nope"
 		}, "not a credential route"},
-		"home outside":     {func(n *Namespace) { n.Agents[0].Home = "/etc" }, "home"},
-		"bad timeout":      {func(n *Namespace) { n.Agents[0].Timeout = "soon" }, "timeout"},
-		"negative timeout": {func(n *Namespace) { n.Agents[0].Timeout = "-1m" }, "timeout"},
+		"home outside":          {func(n *Namespace) { n.Agents[0].Home = "/etc" }, "home"},
+		"bad timeout":           {func(n *Namespace) { n.Agents[0].Timeout = "soon" }, "timeout"},
+		"agent env holds a key": {func(n *Namespace) { n.Agents[0].Env = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x"} }, "looks like a real key"},
+		"mcp env holds a key":   {func(n *Namespace) { n.MCP.Servers[0].Env["GH"] = EnvVal{Value: "ghp_x"} }, "looks like a real key"},
+		"negative timeout":      {func(n *Namespace) { n.Agents[0].Timeout = "-1m" }, "timeout"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

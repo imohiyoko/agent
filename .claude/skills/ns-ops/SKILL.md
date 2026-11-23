@@ -22,7 +22,7 @@ description: nsctl を運用するときに使う。namespace の追加・変更
 
 ## 秘密(認証情報)を足す
 
-- 値は `secrets_file`(既定 `~/.config/nsctl/secrets.yaml`、`chmod 600`)に、人が書く。agent は値を書かない・読まない。
+- 値は `secrets_file`(既定 `~/.config/nsctl/secrets.yaml`、`chmod 600`)に、人が `nsctl secret set <namespace>/<name>` で入れる。agent は値を書かない・読まない。agent が使ってよいのは `nsctl secret list`(名前だけ)と `nsctl doctor`(足りない秘密を名前で出す)。
 - 名前は `<namespace>/<名前>`。値に `env:VAR` と書くと、`nsctl` を起動した環境の変数から読む。
 - agent に頼まれても、値を代わりに入れない。人に頼む。
 
