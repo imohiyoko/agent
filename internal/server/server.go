@@ -2,17 +2,23 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/imohiyoko/agent/internal/audit"
 	"github.com/imohiyoko/agent/internal/auth"
@@ -183,6 +189,14 @@ func (s *Server) startNamespace(parent context.Context, ns *spec.Namespace, errc
 	rt.gateway = mcpgw.New(ns, func(srv *spec.MCPServer) (*exec.Cmd, error) {
 		return s.mcpCommand(rt, srv)
 	}, s.log)
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		pl.Close()
+		cancel()
+		return err
+	}
+	rt.proxy.GatewayKey = hex.EncodeToString(key)
+	rt.gateway.SetRemote(s.proxyClient(rt), rt.proxy.GatewayKey)
 	ml, msock, mport, err := s.listen(ns.Name, "mcp")
 	if err != nil {
 		pl.Close()
@@ -268,6 +282,28 @@ func (s *Server) Reload() (ReloadResult, error) {
 	}
 	s.log.Write(audit.Event{Kind: "reload", Allowed: true, Reason: fmt.Sprintf("added=%v updated=%v removed=%v", res.Added, res.Updated, res.Removed)})
 	return res, nil
+}
+
+// proxyClient returns an HTTP client that sends every request through the
+// namespace's own proxy (used by the MCP gateway for remote servers). The
+// proxy address is read when the request is made.
+func (s *Server) proxyClient(rt *nsRuntime) *http.Client {
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	return &http.Client{
+		Timeout: 10 * time.Minute,
+		// Never follow redirects: the request carries the gateway key, which
+		// must only ever reach this namespace's proxy.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Transport: &http.Transport{
+			Proxy: func(*http.Request) (*url.URL, error) { return url.Parse("http://nsctl-proxy.internal") },
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				if rt.proxySock != "" {
+					return d.DialContext(ctx, "unix", rt.proxySock)
+				}
+				return d.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(rt.proxyPort)))
+			},
+		},
+	}
 }
 
 // current returns the runtime and its current declaration together.

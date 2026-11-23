@@ -143,6 +143,9 @@ func Doctor(c *Config, w io.Writer) int {
 			}
 		}
 		for _, m := range ns.MCP.Servers {
+			if len(m.Command) == 0 {
+				continue // remote server
+			}
 			if _, err := exec.LookPath(m.Command[0]); err != nil {
 				line("fail", "%s: mcp server %s: command %s not found", name, m.Name, m.Command[0])
 			}

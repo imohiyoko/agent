@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/imohiyoko/agent/internal/egress"
+	"github.com/imohiyoko/agent/internal/mcpgw"
 	"github.com/imohiyoko/agent/internal/sandbox"
 	"github.com/imohiyoko/agent/internal/secrets"
 )
@@ -111,6 +113,14 @@ credentials:
     rules:
       - methods: [GET]
         paths: ["/ok"]
+  - name: mcpup
+    upstream: %s
+    header: Authorization
+    format: "Bearer {value}"
+    secret: %s/key
+    rules:
+      - methods: [POST, DELETE]
+        paths: ["/mcp"]
 filesystem:
   writable: [%q]
 mcp:
@@ -120,11 +130,14 @@ mcp:
       env:
         FAKE_TAG: %s
       tools: [read_file]
+    - name: remote
+      credential: mcpup
+      tools: [read_file]
 agents:
   - name: sh
     command: ["sh", "-c", "{prompt}"]
     workdir: %q
-`, name, member, role, upstream.URL, name, work, fake, name, work)
+`, name, member, role, upstream.URL, name, upstream.URL, name, work, fake, name, work)
 	}
 	extra := fmt.Sprintf(`  - name: second
     command: ["true"]
@@ -414,3 +427,119 @@ agents:
 		t.Error("doctor printed a secret value")
 	}
 }
+
+// fakeRemoteMCP answers MCP over Streamable HTTP at /mcp. It answers
+// tools/list with SSE and everything else with JSON, and records calls.
+func fakeRemoteMCP(calls *[]string, auth *string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		*auth = r.Header.Get("Authorization")
+		if r.Header.Get(egress.GatewayHeader) != "" {
+			http.Error(w, "gateway key leaked upstream", 500)
+			return
+		}
+		var m map[string]json.RawMessage
+		json.NewDecoder(r.Body).Decode(&m)
+		var method string
+		json.Unmarshal(m["method"], &method)
+		*calls = append(*calls, method)
+		if method != "initialize" && r.Header.Get("Mcp-Session-Id") != "remote-session" {
+			http.Error(w, "missing session", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Mcp-Session-Id", "remote-session")
+		switch method {
+		case "tools/list":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"sampling/createMessage\"}\n\n")
+			fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"tools\":[{\"name\":\"read_file\"},{\"name\":\"delete_file\"}]}}\n\n", m["id"])
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"ok":true}}`, m["id"])
+		}
+	}
+}
+
+func unixOrTCPClient(sock string, port int) *http.Client {
+	return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		if sock != "" {
+			return net.Dial("unix", sock)
+		}
+		return net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	}}}
+}
+
+func TestRemoteMCP(t *testing.T) {
+	if mcpgwHeader() != egress.GatewayHeader {
+		t.Fatal("mcpgw.GatewayHeader and egress.GatewayHeader differ")
+	}
+	var calls []string
+	var auth string
+	up := httptest.NewTLSServer(fakeRemoteMCP(&calls, &auth))
+	defer up.Close()
+	e := start(t, up)
+	rt := e.srv.runtime("a")
+	gw := unixOrTCPClient(rt.mcpSock, rt.mcpPort)
+	sid := ""
+	post := func(body string) (string, http.Header) {
+		req, _ := http.NewRequest("POST", "http://gw/mcp/remote", strings.NewReader(body))
+		if sid != "" {
+			req.Header.Set("Mcp-Session-Id", sid)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := gw.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b), resp.Header
+	}
+	out, h := post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	if !strings.Contains(out, `"ok":true`) || h.Get("Mcp-Session-Id") != "remote-session" {
+		t.Fatalf("initialize: %q %v", out, h)
+	}
+	sid = h.Get("Mcp-Session-Id")
+	if auth != "Bearer secret-a" {
+		t.Errorf("upstream saw %q", auth)
+	}
+	out, _ = post(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	if !strings.Contains(out, "read_file") || strings.Contains(out, "delete_file") || strings.Contains(out, "sampling") {
+		t.Errorf("tools/list not filtered: %q", out)
+	}
+	n := len(calls)
+	out, _ = post(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"delete_file"}}`)
+	if !strings.Contains(out, "not allowed") || len(calls) != n {
+		t.Errorf("denied tool reached the server: %q %v", out, calls)
+	}
+
+	// The agent cannot skip the gateway by calling the route itself.
+	px := &http.Client{Transport: &http.Transport{
+		Proxy: func(*http.Request) (*url.URL, error) { return url.Parse("http://proxy") },
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			if rt.proxySock != "" {
+				return net.Dial("unix", rt.proxySock)
+			}
+			return net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", rt.proxyPort))
+		},
+	}}
+	for _, key := range []string{"", "guess"} {
+		req, _ := http.NewRequest("POST", "http://mcpup.creds.internal/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"delete_file"}}`))
+		if key != "" {
+			req.Header.Set(egress.GatewayHeader, key)
+		}
+		resp, err := px.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 403 {
+			t.Errorf("direct use of a gateway-only route (key %q): %d", key, resp.StatusCode)
+		}
+	}
+	if len(calls) != n {
+		t.Errorf("direct call reached the server: %v", calls)
+	}
+}
+
+func mcpgwHeader() string { return mcpgw.GatewayHeader }

@@ -49,7 +49,32 @@ mcp:
 - server から agent への要求(sampling など)は、第 1 段では通さない(記録して捨てる)。
 - 判定はすべて namespace の監査ログに残す。
 
+### 4. リモートの MCP server(2026-11-23 追加)
+
+```yaml
+credentials:
+  - name: github-mcp
+    upstream: https://api.githubcopilot.com
+    header: Authorization
+    format: "Bearer {value}"
+    secret: research/github
+    rules:
+      - methods: [POST, DELETE]
+        paths: ["/mcp", "/mcp/"]
+mcp:
+  servers:
+    - name: github
+      credential: github-mcp   # この namespace の認証情報の経路
+      path: /mcp/              # 既定は /mcp
+      tools: [get_file_contents, list_issues]
+```
+
+- gateway は、agent からの MCP の要求を、上の検査(メソッドと tool)を通したあとで、namespace 自身の proxy の認証情報の経路(`http://<経路>.creds.internal<path>`)に送る。経路の規則・秘密・監査がそのまま効く。
+- 返事が JSON でも SSE でも、`tools/list` の結果から許していない tool を消す。server から agent への要求(sampling など)は落とす。
+- **MCP server が使う経路は、gateway だけが使える**(gateway-only)。gateway は `nsctl` の中だけにある乱数の鍵をヘッダーで proxy に示す。agent が経路を直接呼んで tool の検査を飛ばすことはできない(proxy が 403 を返す)。鍵のヘッダーは上流には送らない。
+- `Mcp-Session-Id` は上流のものをそのまま中継する。
+
 ## 限界
 
-- 第 1 段で扱う server は stdio のものだけ。リモートの HTTP の MCP server は、gateway から認証情報を付けて中継する形で後で足す。
-- server から agent への通知の中継(SSE の `GET`)は第 1 段では無い(`405` を返す)。
+- server から agent への通知の中継(SSE の `GET`)は無い(`405` を返す)。
+- リモートの server には、認証情報の経路が要る(認証の無い公開の server も、経路を 1 つ書く)。

@@ -99,10 +99,17 @@ type MCP struct {
 	Servers []MCPServer `yaml:"servers"`
 }
 
-// MCPServer is a stdio MCP server started by the gateway.
+// MCPServer is an MCP server behind the gateway: either a stdio server the
+// gateway starts (Command), or a remote Streamable HTTP server reached
+// through one of this namespace's credential routes (Credential + Path).
 type MCPServer struct {
-	Name           string            `yaml:"name"`
-	Command        []string          `yaml:"command"`
+	Name    string   `yaml:"name"`
+	Command []string `yaml:"command"`
+	// Credential names a credential route of this namespace. The gateway
+	// sends the agent's MCP messages to it, so the route's rules, secret and
+	// audit apply. Path is appended to the route (default "/mcp").
+	Credential     string            `yaml:"credential"`
+	Path           string            `yaml:"path"`
 	Env            map[string]EnvVal `yaml:"env"`
 	Tools          []string          `yaml:"tools"`
 	AllowResources bool              `yaml:"allow_resources"`
@@ -348,8 +355,23 @@ func (ns *Namespace) Validate(home string) error {
 			bad("%s: name %q is listed twice", f, s.Name)
 		}
 		seen[s.Name] = true
-		if len(s.Command) == 0 {
-			bad("%s: command must be set", f)
+		switch {
+		case len(s.Command) == 0 && s.Credential == "":
+			bad("%s: set command (stdio server) or credential (remote server)", f)
+		case len(s.Command) > 0 && s.Credential != "":
+			bad("%s: set command or credential, not both", f)
+		case s.Credential != "":
+			if ns.Credential(s.Credential) == nil {
+				bad("%s: credential %q is not a credential route of this namespace", f, s.Credential)
+			}
+			if s.Path == "" {
+				ns.MCP.Servers[i].Path = "/mcp"
+			} else if !strings.HasPrefix(s.Path, "/") {
+				bad("%s: path %q must start with /", f, s.Path)
+			}
+			if len(s.Env) > 0 {
+				bad("%s: env is only for stdio servers", f)
+			}
 		}
 		if len(s.Tools) == 0 {
 			bad("%s: tools must be listed (nothing is allowed by default)", f)
@@ -443,6 +465,18 @@ func (ns *Namespace) Credential(name string) *Credential {
 		}
 	}
 	return nil
+}
+
+// GatewayOnly reports whether the credential route is used by a remote MCP
+// server. Such routes are only usable by the MCP gateway, so an agent cannot
+// skip the gateway's tool checks by calling the route itself.
+func (ns *Namespace) GatewayOnly(route string) bool {
+	for _, s := range ns.MCP.Servers {
+		if s.Credential == route {
+			return true
+		}
+	}
+	return false
 }
 
 // MCPServer returns the MCP server with that name, or nil.
