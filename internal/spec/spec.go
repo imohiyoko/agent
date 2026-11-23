@@ -143,6 +143,10 @@ type Agent struct {
 	Command []string          `yaml:"command"`
 	Workdir string            `yaml:"workdir"`
 	Env     map[string]string `yaml:"env"`
+	// Home is the agent's HOME (default: the nsctl user's home). Give each
+	// namespace its own, inside filesystem.writable, so tools' settings and
+	// caches (~/.claude, ~/.npm ...) are not shared between namespaces.
+	Home string `yaml:"home"`
 	// Timeout stops a run after this long ("30m", "2h"). Empty means the
 	// server's default.
 	Timeout string `yaml:"timeout"`
@@ -423,6 +427,12 @@ func (ns *Namespace) Validate(home string) error {
 		for k := range a.Env {
 			if !envRe.MatchString(k) {
 				bad("%s.env: %q is not a valid variable name", f, k)
+			}
+		}
+		if a.Home != "" {
+			ns.Agents[i].Home = expand(a.Home, home)
+			if !ns.isWritable(ns.Agents[i].Home) {
+				bad("%s: home %q must be inside filesystem.writable", f, a.Home)
 			}
 		}
 		if a.Timeout != "" {

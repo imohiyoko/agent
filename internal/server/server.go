@@ -422,7 +422,11 @@ func (s *Server) agentCommand(rt *nsRuntime, ns *spec.Namespace, a *spec.Agent, 
 		}
 	}
 	sp.Command = argv
-	env := baseEnv(s.cfg.Home, ep, ns.Name)
+	home := s.cfg.Home
+	if a.Home != "" {
+		home = a.Home
+	}
+	env := baseEnv(home, ep, ns.Name)
 	keys := make([]string, 0, len(a.Env))
 	for k := range a.Env {
 		keys = append(keys, k)

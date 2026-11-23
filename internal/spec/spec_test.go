@@ -72,6 +72,7 @@ func TestValidateRejects(t *testing.T) {
 		"mcp unknown route": {func(n *Namespace) {
 			n.MCP.Servers[0].Command, n.MCP.Servers[0].Env, n.MCP.Servers[0].Credential = nil, nil, "nope"
 		}, "not a credential route"},
+		"home outside":     {func(n *Namespace) { n.Agents[0].Home = "/etc" }, "home"},
 		"bad timeout":      {func(n *Namespace) { n.Agents[0].Timeout = "soon" }, "timeout"},
 		"negative timeout": {func(n *Namespace) { n.Agents[0].Timeout = "-1m" }, "timeout"},
 	}

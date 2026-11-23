@@ -1,6 +1,6 @@
 # ADR 0001: 実行の土台に OpenShell を使い、namespace の層だけを自分で作る
 
-- 状態: Proposed
+- 状態: Proposed。「既定の箱は OpenShell」の部分は [ADR 0002](0002-lightweight-native-sandbox-and-egress-proxy.md) で置き換えた(OpenShell は強い分離が要るときの実行方式として残す。未実装)
 - 日付: 2026-11-23
 - 決めた人: imohiyoko(土台は OpenShell。2026-11-23 に選択)。この ADR の中身(namespace の定義など)はまだ案
 
