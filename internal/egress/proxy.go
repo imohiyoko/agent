@@ -61,6 +61,9 @@ func New(ns *spec.Namespace, src secrets.Source, log *audit.Log) *Proxy {
 	return p
 }
 
+// Name is the namespace's name (it never changes).
+func (p *Proxy) Name() string { return p.ns.Load().Name }
+
 // SetNamespace replaces the rules (for reloads).
 func (p *Proxy) SetNamespace(ns *spec.Namespace) { p.ns.Store(ns) }
 

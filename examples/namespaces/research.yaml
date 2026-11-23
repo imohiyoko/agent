@@ -53,6 +53,7 @@ agents:
   - name: claude
     command: ["claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config"]
     workdir: ~/work/research
+    timeout: 30m
     env:
       ANTHROPIC_BASE_URL: http://anthropic.creds.internal
       ANTHROPIC_API_KEY: placeholder-replaced-by-proxy

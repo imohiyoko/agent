@@ -68,7 +68,7 @@ func (s *Server) ns(action string, h nsHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := principalOf(r)
 		name := r.PathValue("ns")
-		ns := s.set.Namespaces[name]
+		ns := s.nsSet().Namespaces[name]
 		allowed := ns != nil && s.authz.Allowed(p, ns, action)
 		s.log.Write(audit.Event{Namespace: nsName(ns), Kind: "api", Principal: p, Action: action, Target: r.URL.Path, Allowed: allowed})
 		if !allowed {
@@ -105,8 +105,9 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	roles := map[string]string{}
-	for _, name := range s.set.Names() {
-		if role := s.authz.Role(p, s.set.Namespaces[name]); role != "" {
+	set := s.nsSet()
+	for _, name := range set.Names() {
+		if role := s.authz.Role(p, set.Namespaces[name]); role != "" {
 			roles[name] = role
 		}
 	}
@@ -146,8 +147,9 @@ func (s *Server) view(p string, ns *spec.Namespace) namespaceView {
 func (s *Server) listNamespaces(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	out := []namespaceView{}
-	for _, name := range s.set.Names() {
-		ns := s.set.Namespaces[name]
+	set := s.nsSet()
+	for _, name := range set.Names() {
+		ns := set.Namespaces[name]
 		if s.authz.Allowed(p, ns, auth.ActNamespaceRead) {
 			out = append(out, s.view(p, ns))
 		}
@@ -207,7 +209,8 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request, ns *spec.Namespa
 }
 
 func (s *Server) runLogs(w http.ResponseWriter, r *http.Request, ns *spec.Namespace) {
-	p := s.runs.logPath(ns.Name, r.PathValue("id"))
+	id := r.PathValue("id")
+	p := s.runs.logPath(ns.Name, id)
 	if p == "" {
 		apiError(w, http.StatusNotFound, "not found")
 		return
@@ -219,7 +222,32 @@ func (s *Server) runLogs(w http.ResponseWriter, r *http.Request, ns *spec.Namesp
 	}
 	defer f.Close()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = io.Copy(w, f)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.URL.Query().Get("follow") != "1" {
+		_, _ = io.Copy(w, f)
+		return
+	}
+	// follow=1: stream the output until the run ends or the client leaves.
+	fl, _ := w.(http.Flusher)
+	done := s.runs.doneCh(ns.Name, id)
+	tick := time.NewTicker(300 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if _, err := io.Copy(w, f); err != nil {
+			return
+		}
+		if fl != nil {
+			fl.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-done:
+			_, _ = io.Copy(w, f)
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 func (s *Server) stopRun(w http.ResponseWriter, r *http.Request, ns *spec.Namespace) {

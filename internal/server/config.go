@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -24,6 +25,12 @@ type Config struct {
 	Admins        []string `yaml:"admins"`
 	// MaxRunsPerNamespace limits concurrent runs (default 4).
 	MaxRunsPerNamespace int `yaml:"max_runs_per_namespace"`
+	// DefaultRunTimeout stops runs whose agent sets no timeout (default 1h).
+	DefaultRunTimeout string `yaml:"default_run_timeout"`
+	// MaxLogBytes caps each run's output log (default 10 MiB).
+	MaxLogBytes int64 `yaml:"max_log_bytes"`
+
+	runTimeout time.Duration
 
 	// Home is used to expand "~" (not part of the YAML).
 	Home string `yaml:"-"`
@@ -76,6 +83,12 @@ func (c *Config) resolve(base string) {
 	if c.MaxRunsPerNamespace == 0 {
 		c.MaxRunsPerNamespace = 4
 	}
+	if c.DefaultRunTimeout == "" {
+		c.DefaultRunTimeout = "1h"
+	}
+	if c.MaxLogBytes == 0 {
+		c.MaxLogBytes = 10 << 20
+	}
 }
 
 // Validate checks the config.
@@ -88,6 +101,14 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxRunsPerNamespace < 1 {
 		errs = append(errs, errors.New("max_runs_per_namespace must be at least 1"))
+	}
+	d, err := time.ParseDuration(c.DefaultRunTimeout)
+	if err != nil || d <= 0 {
+		errs = append(errs, fmt.Errorf("default_run_timeout %q must be a positive duration", c.DefaultRunTimeout))
+	}
+	c.runTimeout = d
+	if c.MaxLogBytes < 1024 {
+		errs = append(errs, errors.New("max_log_bytes must be at least 1024"))
 	}
 	return errors.Join(errs...)
 }

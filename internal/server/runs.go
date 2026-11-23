@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -23,6 +24,10 @@ const (
 	StateExited  = "exited"
 	StateFailed  = "failed"
 	StateStopped = "stopped"
+	StateTimeout = "timeout"
+	// StateLost is a run that was running when nsctl stopped. Its process
+	// died with nsctl (bwrap --die-with-parent; the process group on macOS).
+	StateLost = "lost"
 )
 
 // Run is one agent run, as the API shows it.
@@ -36,10 +41,11 @@ type Run struct {
 	Error     string     `json:"error,omitempty"`
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	Deadline  *time.Time `json:"deadline,omitempty"`
 
 	cmd     *exec.Cmd
 	logPath string
-	stopped bool
+	why     string // "stop" or "timeout" when nsctl ended it
 	done    chan struct{}
 }
 
@@ -54,12 +60,85 @@ func newRuns(s *Server) *runs { return &runs{s: s, m: map[string]*Run{}} }
 // ErrLimit is returned when a namespace has too many runs.
 var ErrLimit = errors.New("too many runs in this namespace")
 
+func (r *runs) dir(id string) string { return filepath.Join(r.s.cfg.PrivateDir(), "runs", id) }
+
+// save writes the run's record. Called with r.mu held.
+func (r *runs) save(x *Run) {
+	b, err := json.MarshalIndent(x, "", "  ")
+	if err != nil {
+		return
+	}
+	p := filepath.Join(r.dir(x.ID), "run.json")
+	_ = os.WriteFile(p+".tmp", b, 0o600)
+	_ = os.Rename(p+".tmp", p)
+}
+
+// load reads the records of earlier runs. Runs that were running when nsctl
+// stopped are marked lost.
+func (r *runs) load() error {
+	root := filepath.Join(r.s.cfg.PrivateDir(), "runs")
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(root, e.Name(), "run.json"))
+		if err != nil {
+			continue
+		}
+		var x Run
+		if json.Unmarshal(b, &x) != nil || x.ID != e.Name() {
+			continue
+		}
+		x.logPath = filepath.Join(root, x.ID, "output.log")
+		x.done = make(chan struct{})
+		close(x.done)
+		if x.State == StateRunning {
+			x.State = StateLost
+			r.save(&x)
+		}
+		r.m[x.ID] = &x
+	}
+	return nil
+}
+
+func (r *runs) timeout(a *spec.Agent) time.Duration {
+	if a.TimeoutDur > 0 {
+		return a.TimeoutDur
+	}
+	if r.s.cfg.runTimeout > 0 {
+		return r.s.cfg.runTimeout
+	}
+	d, err := time.ParseDuration(r.s.cfg.DefaultRunTimeout)
+	if err != nil || d <= 0 {
+		return time.Hour
+	}
+	return d
+}
+
 func (r *runs) start(ns *spec.Namespace, agentName, prompt, principal string) (*Run, error) {
 	rt := r.s.runtime(ns.Name)
 	a := ns.Agent(agentName)
 	if rt == nil || a == nil {
 		return nil, ErrNotFound
 	}
+	idb := make([]byte, 8)
+	_, _ = rand.Read(idb)
+	now := time.Now().UTC()
+	limit := r.timeout(a)
+	deadline := now.Add(limit)
+	run := &Run{
+		ID: hex.EncodeToString(idb), Namespace: ns.Name, Agent: a.Name, Principal: principal,
+		State: StateRunning, StartedAt: now, Deadline: &deadline, done: make(chan struct{}),
+	}
+
+	// Count and reserve under one lock so two requests cannot both take the
+	// last slot.
 	r.mu.Lock()
 	n := 0
 	for _, x := range r.m {
@@ -67,51 +146,60 @@ func (r *runs) start(ns *spec.Namespace, agentName, prompt, principal string) (*
 			n++
 		}
 	}
-	r.mu.Unlock()
 	if n >= r.s.cfg.MaxRunsPerNamespace {
+		r.mu.Unlock()
 		return nil, ErrLimit
 	}
-	idb := make([]byte, 8)
-	_, _ = rand.Read(idb)
-	run := &Run{
-		ID: hex.EncodeToString(idb), Namespace: ns.Name, Agent: a.Name, Principal: principal,
-		State: StateRunning, StartedAt: time.Now().UTC(), done: make(chan struct{}),
-	}
-	dir := filepath.Join(r.s.cfg.PrivateDir(), "runs", run.ID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	r.m[run.ID] = run
+	r.mu.Unlock()
+	fail := func(err error) (*Run, error) {
+		r.mu.Lock()
+		delete(r.m, run.ID)
+		r.mu.Unlock()
+		_ = os.RemoveAll(r.dir(run.ID))
 		return nil, err
 	}
-	run.logPath = filepath.Join(dir, "output.log")
-	out, err := os.OpenFile(run.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+
+	if err := os.MkdirAll(r.dir(run.ID), 0o700); err != nil {
+		return fail(err)
+	}
+	run.logPath = filepath.Join(r.dir(run.ID), "output.log")
+	f, err := os.OpenFile(run.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
-	cmd, err := r.s.agentCommand(rt, a, prompt, run.ID)
+	out := &capped{f: f, left: r.s.cfg.MaxLogBytes}
+	cmd, err := r.s.agentCommand(rt, ns, a, prompt, run.ID)
 	if err != nil {
-		out.Close()
-		return nil, err
+		f.Close()
+		return fail(err)
 	}
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
-		out.Close()
-		return nil, fmt.Errorf("start: %w", err)
+		f.Close()
+		return fail(fmt.Errorf("start: %w", err))
 	}
-	run.cmd = cmd
 	r.mu.Lock()
-	r.m[run.ID] = run
+	run.cmd = cmd
+	r.save(run)
 	r.mu.Unlock()
 	r.s.log.Write(audit.Event{Namespace: ns.Name, Kind: "run", Principal: principal, Action: "start", Target: a.Name + "/" + run.ID, Allowed: true})
+
+	timer := time.AfterFunc(limit, func() { r.end(run, "timeout") })
 	go func() {
 		err := cmd.Wait()
-		out.Close()
+		timer.Stop()
+		f.Close()
 		now := time.Now().UTC()
 		r.mu.Lock()
 		run.EndedAt = &now
 		code := cmd.ProcessState.ExitCode()
 		run.ExitCode = &code
 		switch {
-		case run.stopped:
+		case run.why == "timeout":
+			run.State = StateTimeout
+		case run.why == "stop":
 			run.State = StateStopped
 		case err == nil:
 			run.State = StateExited
@@ -119,11 +207,32 @@ func (r *runs) start(ns *spec.Namespace, agentName, prompt, principal string) (*
 			run.State = StateFailed
 			run.Error = err.Error()
 		}
+		r.save(run)
 		r.mu.Unlock()
 		_ = os.RemoveAll(filepath.Join(r.s.cfg.PublicDir(), run.ID))
+		r.s.log.Write(audit.Event{Namespace: run.Namespace, Kind: "run", Principal: run.Principal, Action: "end", Target: run.Agent + "/" + run.ID, Allowed: true, Reason: run.State})
 		close(run.done)
 	}()
 	return run, nil
+}
+
+// end stops a running run: SIGTERM to its process group, SIGKILL after 10s.
+func (r *runs) end(x *Run, why string) {
+	r.mu.Lock()
+	if x.State != StateRunning || x.cmd == nil || x.why != "" {
+		r.mu.Unlock()
+		return
+	}
+	x.why = why
+	pid := x.cmd.Process.Pid
+	r.mu.Unlock()
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	select {
+	case <-x.done:
+	case <-time.After(10 * time.Second):
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		<-x.done
+	}
 }
 
 func (r *runs) get(ns, id string) *Run {
@@ -150,55 +259,67 @@ func (r *runs) list(ns string) []Run {
 	return out
 }
 
-func (r *runs) stop(ns, id string) error {
-	r.mu.Lock()
-	x := r.m[id]
-	if x == nil || x.Namespace != ns {
-		r.mu.Unlock()
-		return ErrNotFound
-	}
-	if x.State != StateRunning {
-		r.mu.Unlock()
-		return nil
-	}
-	x.stopped = true
-	pid := x.cmd.Process.Pid
-	r.mu.Unlock()
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	select {
-	case <-x.done:
-	case <-time.After(10 * time.Second):
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		<-x.done
-	}
-	return nil
-}
-
-func (r *runs) stopAll() {
-	r.mu.Lock()
-	var ids [][2]string
-	for _, x := range r.m {
-		if x.State == StateRunning {
-			ids = append(ids, [2]string{x.Namespace, x.ID})
-		}
-	}
-	r.mu.Unlock()
-	var wg sync.WaitGroup
-	for _, id := range ids {
-		wg.Add(1)
-		go func() { defer wg.Done(); _ = r.stop(id[0], id[1]) }()
-	}
-	wg.Wait()
-}
-
-func (r *runs) logPath(ns, id string) string {
+func (r *runs) find(ns, id string) *Run {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	x := r.m[id]
 	if x == nil || x.Namespace != ns {
+		return nil
+	}
+	return x
+}
+
+func (r *runs) stop(ns, id string) error {
+	x := r.find(ns, id)
+	if x == nil {
+		return ErrNotFound
+	}
+	r.end(x, "stop")
+	return nil
+}
+
+func (r *runs) running(filter func(*Run) bool) []*Run {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*Run
+	for _, x := range r.m {
+		if x.State == StateRunning && filter(x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func (r *runs) stopEach(xs []*Run) {
+	var wg sync.WaitGroup
+	for _, x := range xs {
+		wg.Add(1)
+		go func() { defer wg.Done(); r.end(x, "stop") }()
+	}
+	wg.Wait()
+}
+
+func (r *runs) stopAll() { r.stopEach(r.running(func(*Run) bool { return true })) }
+
+func (r *runs) stopNamespace(ns string) {
+	r.stopEach(r.running(func(x *Run) bool { return x.Namespace == ns }))
+}
+
+func (r *runs) logPath(ns, id string) string {
+	x := r.find(ns, id)
+	if x == nil {
 		return ""
 	}
 	return x.logPath
+}
+
+// doneCh returns a channel closed when the run ends.
+func (r *runs) doneCh(ns, id string) <-chan struct{} {
+	x := r.find(ns, id)
+	if x == nil {
+		return nil
+	}
+	return x.done
 }
 
 // wait blocks until the run ends (tests).
@@ -209,4 +330,34 @@ func (r *runs) wait(id string) {
 	if x != nil {
 		<-x.done
 	}
+}
+
+// capped writes up to left bytes, then one notice, then drops the rest.
+type capped struct {
+	mu   sync.Mutex
+	f    *os.File
+	left int64
+	cut  bool
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cut {
+		return len(p), nil
+	}
+	w := p
+	if int64(len(w)) > c.left {
+		w = w[:c.left]
+	}
+	n, err := c.f.Write(w)
+	c.left -= int64(n)
+	if err != nil {
+		return n, err
+	}
+	if n < len(p) {
+		c.cut = true
+		_, _ = c.f.WriteString("\n[nsctl: output truncated at max_log_bytes]\n")
+	}
+	return len(p), nil
 }

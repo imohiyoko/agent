@@ -6,3 +6,7 @@ secrets_file: ~/.config/nsctl/secrets.yaml
 listen: 127.0.0.1:7070
 admins: []
 max_runs_per_namespace: 4
+# agent に timeout が無いときの時間制限
+default_run_timeout: 1h
+# 実行ごとの出力の上限(バイト)
+max_log_bytes: 10485760

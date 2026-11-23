@@ -38,7 +38,7 @@ Client side (uses NSCTL_URL, default http://127.0.0.1:7070, and NSCTL_TOKEN):
   nsctl run <namespace> <agent> <prompt>
   nsctl runs <namespace>
   nsctl status <namespace> <run-id>
-  nsctl logs <namespace> <run-id>
+  nsctl logs <namespace> <run-id> [-f]          -f: follow until the run ends
   nsctl stop <namespace> <run-id>
   nsctl audit <namespace>
 
@@ -141,6 +141,19 @@ func serve(args []string) error {
 	fmt.Fprintln(os.Stderr, "nsctl: serving the API on", l.Addr())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for range hup {
+			res, err := s.Reload()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "nsctl: reload failed, keeping the current declarations:", err)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "nsctl: reloaded (added %v, updated %v, removed %v)\n", res.Added, res.Updated, res.Removed)
+		}
+	}()
+	fmt.Fprintf(os.Stderr, "nsctl: pid %d (kill -HUP %d to reload the declarations)\n", os.Getpid(), os.Getpid())
 	return s.Run(ctx, l)
 }
 
@@ -219,6 +232,10 @@ func client(cmd string, args []string) error {
 	if tok == "" {
 		return fmt.Errorf("set NSCTL_TOKEN (create one with: nsctl token create <principal>)")
 	}
+	follow := false
+	if cmd == "logs" && len(args) == 3 && args[2] == "-f" {
+		follow, args = true, args[:2]
+	}
 	need := map[string]int{"whoami": 0, "namespaces": 0, "run": 3, "runs": 1, "status": 2, "logs": 2, "stop": 2, "audit": 1}
 	if len(args) != need[cmd] {
 		return fmt.Errorf("wrong number of arguments\n\n%s", usage)
@@ -240,6 +257,9 @@ func client(cmd string, args []string) error {
 		path = "/v1/namespaces/" + args[0] + "/runs/" + args[1]
 	case "logs":
 		path = "/v1/namespaces/" + args[0] + "/runs/" + args[1] + "/logs"
+		if follow {
+			path += "?follow=1"
+		}
 	case "stop":
 		method, path = http.MethodPost, "/v1/namespaces/"+args[0]+"/runs/"+args[1]+"/stop"
 	case "audit":

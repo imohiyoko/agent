@@ -49,11 +49,15 @@ func TestMain(m *testing.M) {
 }
 
 type env struct {
-	t     *testing.T
-	api   string
-	srv   *Server
-	state string
-	work  string
+	t      *testing.T
+	api    string
+	srv    *Server
+	state  string
+	work   string
+	nsDir  string
+	cfg    *Config
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func (e *env) call(token, method, path, body string) (int, string) {
@@ -122,9 +126,20 @@ agents:
     workdir: %q
 `, name, member, role, upstream.URL, name, work, fake, name, work)
 	}
-	os.WriteFile(filepath.Join(nsDir, "a.yaml"), []byte(nsYAML("a", "alice", "operator")+"  - name: second\n    command: [\"true\"]\n    workdir: \""+work+"\"\n"), 0o600)
+	extra := fmt.Sprintf(`  - name: second
+    command: ["true"]
+    workdir: %q
+  - name: sleepy
+    command: ["sleep", "30"]
+    workdir: %q
+    timeout: 1s
+  - name: loud
+    command: ["sh", "-c", "head -c 5000 /dev/zero | tr '\\0' x"]
+    workdir: %q
+`, work, work, work)
+	os.WriteFile(filepath.Join(nsDir, "a.yaml"), []byte(nsYAML("a", "alice", "operator")+extra), 0o600)
 	os.WriteFile(filepath.Join(nsDir, "b.yaml"), []byte(nsYAML("b", "bob", "operator")), 0o600)
-	cfg := &Config{NamespacesDir: nsDir, StateDir: filepath.Join(root, "state"), SecretsFile: filepath.Join(root, "secrets.yaml"), Home: home}
+	cfg := &Config{NamespacesDir: nsDir, StateDir: filepath.Join(root, "state"), SecretsFile: filepath.Join(root, "secrets.yaml"), Home: home, MaxLogBytes: 2048}
 	cfg.resolve(root)
 	s, err := New(cfg)
 	if err != nil {
@@ -145,7 +160,115 @@ agents:
 	go func() { _ = s.Run(ctx, l); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 	time.Sleep(100 * time.Millisecond)
-	return &env{t: t, api: "http://" + l.Addr().String(), srv: s, state: cfg.StateDir, work: work}
+	return &env{t: t, api: "http://" + l.Addr().String(), srv: s, state: cfg.StateDir, work: work, nsDir: nsDir, cfg: cfg, cancel: cancel, done: done}
+}
+
+func needSandbox(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("linux only (macOS needs a manual check)")
+	}
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not installed")
+	}
+}
+
+func (e *env) run(token, agent, prompt string) Run {
+	e.t.Helper()
+	body, _ := json.Marshal(map[string]string{"agent": agent, "prompt": prompt})
+	code, resp := e.call(token, "POST", "/v1/namespaces/a/runs", string(body))
+	if code != 201 {
+		e.t.Fatalf("create run: %d %s", code, resp)
+	}
+	var run Run
+	json.Unmarshal([]byte(resp), &run)
+	return run
+}
+
+func TestRunTimeoutLogCapAndPersistence(t *testing.T) {
+	needSandbox(t)
+	up := httptest.NewTLSServer(http.NotFoundHandler())
+	defer up.Close()
+	e := start(t, up)
+	_, alice, _ := e.srv.Tokens().Create("alice", "")
+
+	slow := e.run(alice, "sleepy", "")
+	loud := e.run(alice, "loud", "")
+	e.srv.runs.wait(slow.ID)
+	e.srv.runs.wait(loud.ID)
+	if got := e.srv.runs.get("a", slow.ID); got.State != StateTimeout {
+		t.Errorf("sleepy state %q, want timeout", got.State)
+	}
+	_, out := e.call(alice, "GET", "/v1/namespaces/a/runs/"+loud.ID+"/logs", "")
+	if !strings.Contains(out, "output truncated") || len(out) > 2048+100 {
+		t.Errorf("log not capped: %d bytes", len(out))
+	}
+
+	// A new server over the same state sees the old runs; a run left
+	// "running" in the record is shown as lost.
+	rec := filepath.Join(e.state, "private", "runs", slow.ID, "run.json")
+	b, _ := os.ReadFile(rec)
+	os.WriteFile(rec, []byte(strings.Replace(string(b), `"state": "timeout"`, `"state": "running"`, 1)), 0o600)
+	s2, err := New(e.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s2.runs.get("a", slow.ID); got == nil || got.State != StateLost {
+		t.Errorf("after restart: %+v", got)
+	}
+	if got := s2.runs.get("a", loud.ID); got == nil || got.State != StateExited {
+		t.Errorf("after restart: %+v", got)
+	}
+}
+
+func TestLogsFollow(t *testing.T) {
+	needSandbox(t)
+	up := httptest.NewTLSServer(http.NotFoundHandler())
+	defer up.Close()
+	e := start(t, up)
+	_, alice, _ := e.srv.Tokens().Create("alice", "")
+	run := e.run(alice, "sh", "echo first; sleep 1; echo second")
+	code, out := e.call(alice, "GET", "/v1/namespaces/a/runs/"+run.ID+"/logs?follow=1", "")
+	if code != 200 || !strings.Contains(out, "first") || !strings.Contains(out, "second") {
+		t.Fatalf("follow: %d %q", code, out)
+	}
+}
+
+func TestReload(t *testing.T) {
+	up := httptest.NewTLSServer(http.NotFoundHandler())
+	defer up.Close()
+	e := start(t, up)
+	_, bob, _ := e.srv.Tokens().Create("bob", "")
+	_, carol, _ := e.srv.Tokens().Create("carol", "")
+
+	// An invalid file leaves everything as it was.
+	os.WriteFile(filepath.Join(e.nsDir, "c.yaml"), []byte("version: 1\nname: c\nnetwork:\n  allow:\n    - host: \"*\"\n      ports: [443]\n"), 0o600)
+	if _, err := e.srv.Reload(); err == nil {
+		t.Fatal("invalid declaration was accepted")
+	}
+	if code, _ := e.call(bob, "GET", "/v1/namespaces/b", ""); code != 200 {
+		t.Fatalf("b gone after a failed reload: %d", code)
+	}
+
+	// Remove b, add c with carol.
+	os.Remove(filepath.Join(e.nsDir, "b.yaml"))
+	os.WriteFile(filepath.Join(e.nsDir, "c.yaml"), []byte("version: 1\nname: c\nmembers:\n  - principal: carol\n    role: viewer\n"), 0o600)
+	res, err := e.srv.Reload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(res.Added) != "[c]" || fmt.Sprint(res.Removed) != "[b]" {
+		t.Errorf("reload result %+v", res)
+	}
+	if code, _ := e.call(bob, "GET", "/v1/namespaces/b", ""); code != 404 {
+		t.Errorf("removed namespace still served: %d", code)
+	}
+	if code, _ := e.call(carol, "GET", "/v1/namespaces/c", ""); code != 200 {
+		t.Errorf("added namespace not served: %d", code)
+	}
+	if e.srv.runtime("b") != nil || e.srv.runtime("c") == nil {
+		t.Error("runtimes not updated")
+	}
 }
 
 func TestAPIAuth(t *testing.T) {
@@ -192,12 +315,7 @@ func TestAPIAuth(t *testing.T) {
 // works, everything else is blocked, private files are hidden and the MCP
 // gateway answers with this namespace's server.
 func TestRunInSandbox(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("linux only (macOS needs a manual check)")
-	}
-	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skip("bwrap not installed")
-	}
+	needSandbox(t)
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl not installed")
 	}
