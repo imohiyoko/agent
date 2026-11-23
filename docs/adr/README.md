@@ -10,3 +10,4 @@
 | [0002](0002-lightweight-native-sandbox-and-egress-proxy.md) | 既定の実行は OS の軽いサンドボックスと自前の proxy にし、OpenShell は強い分離が要るときの選択肢にする | Accepted |
 | [0003](0003-authn-authz-and-external-api.md) | 認証は人と仕組みだけに持たせ、namespace ごとの役割で認可し、外からの指示は API で受ける | Accepted |
 | [0004](0004-per-namespace-mcp-gateway.md) | MCP は namespace ごとの gateway を通し、使える server と tool を namespace で切り替える | Accepted |
+| [0005](0005-interactive-sessions-and-terminal-multiplexers.md) | 人の端末で agent を対話で動かす(nsctl shell)。端末の道具(cmux など)とは組み合わせて使う | Accepted |

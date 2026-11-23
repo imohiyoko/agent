@@ -36,6 +36,8 @@ Server side (run by a person):
   nsctl secret set <namespace>/<name> [-config ...]   value from stdin, hidden on a terminal
   nsctl secret list [-config ...]                     names only, never values
   nsctl secret rm <namespace>/<name> [-config ...]
+  nsctl shell <namespace> [agent] [-config ...]       the agent's interactive command in this terminal
+                                                      (needs nsctl serve on this machine, same user)
 
 Client side (uses NSCTL_URL, default http://127.0.0.1:7070, and NSCTL_TOKEN):
   nsctl whoami
@@ -76,6 +78,8 @@ func main() {
 		err = token(args)
 	case "secret":
 		err = secret(args)
+	case "shell":
+		err = shell(args)
 	case "sandbox-init":
 		os.Exit(sandboxInit(args))
 	case "whoami", "namespaces", "run", "runs", "status", "logs", "stop", "audit":

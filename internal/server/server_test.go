@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -151,7 +152,15 @@ agents:
   - name: loud
     command: ["sh", "-c", "head -c 5000 /dev/zero | tr '\\0' x"]
     workdir: %q
-`, work, work, work)
+  - name: talk
+    command: ["true"]
+    interactive: ["sh", "-c", "read x; echo \"got=$x term=$TERM\"; exit 3"]
+    workdir: %q
+  - name: wait
+    command: ["true"]
+    interactive: ["sleep", "30"]
+    workdir: %q
+`, work, work, work, work, work)
 	os.WriteFile(filepath.Join(nsDir, "a.yaml"), []byte(nsYAML("a", "alice", "operator")+extra), 0o600)
 	os.WriteFile(filepath.Join(nsDir, "b.yaml"), []byte(nsYAML("b", "bob", "operator")), 0o600)
 	cfg := &Config{NamespacesDir: nsDir, StateDir: filepath.Join(root, "state"), SecretsFile: filepath.Join(root, "secrets.yaml"), Home: home, MaxLogBytes: 2048}
@@ -567,5 +576,88 @@ func TestClaudeAuthProblems(t *testing.T) {
 		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
 			t.Errorf("env %v: got %q, want %q", c.env, got, c.want)
 		}
+	}
+}
+
+func TestShell(t *testing.T) {
+	needSandbox(t)
+	up := httptest.NewTLSServer(http.NotFoundHandler())
+	defer up.Close()
+	e := start(t, up)
+	pipe := func() (*os.File, *os.File) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { r.Close(); w.Close() })
+		return r, w
+	}
+
+	// The agent reads the person's input and writes to their terminal.
+	inR, inW := pipe()
+	outR, outW := pipe()
+	type result struct {
+		res ShellResult
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		res, err := Shell(e.cfg, "a", "talk", "xterm-test", inR, outW, outW, nil)
+		done <- result{res, err}
+	}()
+	io.WriteString(inW, "hello\n")
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	outW.Close()
+	out, _ := io.ReadAll(outR)
+	if strings.Contains(string(out), "No permissions to create new namespace") {
+		t.Skip("user namespaces not available")
+	}
+	if !strings.Contains(string(out), "got=hello term=xterm-test") {
+		t.Fatalf("agent output %q", out)
+	}
+	if got.res.ExitCode != 3 || got.res.State != StateFailed {
+		t.Errorf("result %+v, want exit 3, state failed", got.res)
+	}
+	run := e.srv.runs.get("a", got.res.Run)
+	if run == nil || run.Mode != ModeInteractive || run.Principal != LocalPrincipal || run.Deadline != nil {
+		t.Fatalf("run record %+v", run)
+	}
+	if log, _ := os.ReadFile(run.logPath); strings.Contains(string(log), "got=") {
+		t.Error("an interactive session's output was recorded")
+	}
+
+	// An agent without an interactive command is refused.
+	_, outW = pipe()
+	if _, err := Shell(e.cfg, "a", "sh", "", inR, outW, outW, nil); err == nil || !strings.Contains(err.Error(), "no interactive command") {
+		t.Errorf("agent without interactive: %v", err)
+	}
+	if _, err := Shell(e.cfg, "zzz", "talk", "", inR, outW, outW, nil); err == nil {
+		t.Error("unknown namespace accepted")
+	}
+
+	// Closing the terminal side (the client) stops the session.
+	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: e.cfg.ControlSocket(), Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rights := syscall.UnixRights(int(inR.Fd()), int(outW.Fd()), int(outW.Fd()))
+	if _, _, err := conn.WriteMsgUnix([]byte(`{"namespace":"a","agent":"wait"}`), rights, nil); err != nil {
+		t.Fatal(err)
+	}
+	var first shellReply
+	if err := json.NewDecoder(conn).Decode(&first); err != nil || first.Run == "" {
+		t.Fatalf("first reply %+v, %v", first, err)
+	}
+	conn.Close()
+	select {
+	case <-e.srv.runs.doneCh("a", first.Run):
+	case <-time.After(15 * time.Second):
+		t.Fatal("session kept running after the client went away")
+	}
+	if r := e.srv.runs.get("a", first.Run); r.State != StateStopped {
+		t.Errorf("state %s, want stopped", r.State)
 	}
 }

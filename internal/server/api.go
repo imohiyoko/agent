@@ -186,7 +186,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, ns *spec.Name
 		apiError(w, http.StatusBadRequest, "prompt must not contain NUL")
 		return
 	}
-	run, err := s.runs.start(ns, req.Agent, req.Prompt, principalOf(r))
+	run, err := s.runs.start(ns, req.Agent, principalOf(r), launch{Prompt: req.Prompt})
 	switch {
 	case errors.Is(err, ErrLimit):
 		apiError(w, http.StatusTooManyRequests, err.Error())

@@ -139,10 +139,15 @@ func (e *EnvVal) UnmarshalYAML(n *yaml.Node) error {
 
 // Agent is a command the API may start in this namespace.
 type Agent struct {
-	Name    string            `yaml:"name"`
-	Command []string          `yaml:"command"`
-	Workdir string            `yaml:"workdir"`
-	Env     map[string]string `yaml:"env"`
+	Name string `yaml:"name"`
+	// Command runs the agent on one prompt (nsctl run, the API).
+	Command []string `yaml:"command"`
+	// Interactive runs the agent in a person's terminal (nsctl shell), for
+	// example ["claude"]. It may use {mcp_config} but not {prompt}. Empty
+	// means the agent has no interactive mode.
+	Interactive []string          `yaml:"interactive"`
+	Workdir     string            `yaml:"workdir"`
+	Env         map[string]string `yaml:"env"`
 	// Home is the agent's HOME (default: the nsctl user's home). Give each
 	// namespace its own, inside filesystem.writable, so tools' settings and
 	// caches (~/.claude, ~/.npm ...) are not shared between namespaces.
@@ -417,6 +422,11 @@ func (ns *Namespace) Validate(home string) error {
 		for _, arg := range a.Command {
 			if arg != PromptPlaceholder && strings.Contains(arg, PromptPlaceholder) {
 				bad("%s: %s must be a whole argument, not part of one", f, PromptPlaceholder)
+			}
+		}
+		for _, arg := range a.Interactive {
+			if strings.Contains(arg, PromptPlaceholder) {
+				bad("%s: interactive must not use %s (the person types the prompts)", f, PromptPlaceholder)
 			}
 		}
 		if a.Workdir == "" {
