@@ -291,6 +291,9 @@ func (s *Server) proxyClient(rt *nsRuntime) *http.Client {
 	d := &net.Dialer{Timeout: 10 * time.Second}
 	return &http.Client{
 		Timeout: 10 * time.Minute,
+		// Never follow redirects: the request carries the gateway key, which
+		// must only ever reach this namespace's proxy.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
 			Proxy: func(*http.Request) (*url.URL, error) { return url.Parse("http://nsctl-proxy.internal") },
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {

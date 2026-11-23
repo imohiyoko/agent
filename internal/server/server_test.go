@@ -445,6 +445,10 @@ func fakeRemoteMCP(calls *[]string, auth *string) http.HandlerFunc {
 		var method string
 		json.Unmarshal(m["method"], &method)
 		*calls = append(*calls, method)
+		if method != "initialize" && r.Header.Get("Mcp-Session-Id") != "remote-session" {
+			http.Error(w, "missing session", http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Mcp-Session-Id", "remote-session")
 		switch method {
 		case "tools/list":
@@ -478,8 +482,12 @@ func TestRemoteMCP(t *testing.T) {
 	e := start(t, up)
 	rt := e.srv.runtime("a")
 	gw := unixOrTCPClient(rt.mcpSock, rt.mcpPort)
+	sid := ""
 	post := func(body string) (string, http.Header) {
 		req, _ := http.NewRequest("POST", "http://gw/mcp/remote", strings.NewReader(body))
+		if sid != "" {
+			req.Header.Set("Mcp-Session-Id", sid)
+		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		resp, err := gw.Do(req)
@@ -494,6 +502,7 @@ func TestRemoteMCP(t *testing.T) {
 	if !strings.Contains(out, `"ok":true`) || h.Get("Mcp-Session-Id") != "remote-session" {
 		t.Fatalf("initialize: %q %v", out, h)
 	}
+	sid = h.Get("Mcp-Session-Id")
 	if auth != "Bearer secret-a" {
 		t.Errorf("upstream saw %q", auth)
 	}

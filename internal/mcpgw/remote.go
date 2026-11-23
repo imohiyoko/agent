@@ -24,7 +24,6 @@ func (g *Gateway) serveRemote(w http.ResponseWriter, r *http.Request, srv *spec.
 		http.Error(w, "nsctl: remote MCP servers are not configured", http.StatusBadGateway)
 		return
 	}
-	target := "http://" + srv.Credential + spec.CredsSuffix + srv.Path
 	var body []byte
 	var m message
 	switch r.Method {
@@ -40,8 +39,13 @@ func (g *Gateway) serveRemote(w http.ResponseWriter, r *http.Request, srv *spec.
 			writeJSON(w, rpcError(nil, -32600, "batches are not supported"))
 			return
 		}
-		if err := json.Unmarshal(body, &m); err != nil {
+		if err := decodeStrict(body, &m); err != nil {
 			writeJSON(w, rpcError(nil, -32700, "parse error"))
+			return
+		}
+		// The declaration may have been reloaded while the body was read.
+		if srv = g.ns.Load().MCPServer(srv.Name); srv == nil || srv.Credential == "" {
+			http.Error(w, "nsctl: MCP server changed; reconnect", http.StatusNotFound)
 			return
 		}
 		if m.Method != "" {
@@ -62,6 +66,7 @@ func (g *Gateway) serveRemote(w http.ResponseWriter, r *http.Request, srv *spec.
 		return
 	}
 
+	target := "http://" + srv.Credential + spec.CredsSuffix + srv.Path
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -93,14 +98,14 @@ func (g *Gateway) serveRemote(w http.ResponseWriter, r *http.Request, srv *spec.
 	switch {
 	case strings.HasPrefix(ct, "text/event-stream"):
 		w.WriteHeader(resp.StatusCode)
-		g.relaySSE(w, resp.Body, srv, m.ID, isList)
+		g.relaySSE(w, resp.Body, srv, isList)
 	case strings.HasPrefix(ct, "application/json") && resp.StatusCode < 300:
 		b, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 		if err != nil {
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		b = g.filterMessage(b, srv, m.ID, isList)
+		b = g.filterMessage(b, srv, isList)
 		w.Header().Del("Content-Length")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(b)
@@ -113,7 +118,7 @@ func (g *Gateway) serveRemote(w http.ResponseWriter, r *http.Request, srv *spec.
 // filterMessage applies the gateway's rules to one message from the server:
 // tools/list results are filtered, server-to-client requests are dropped.
 // It returns nil when the message must not reach the agent.
-func (g *Gateway) filterMessage(b []byte, srv *spec.MCPServer, reqID json.RawMessage, isList bool) []byte {
+func (g *Gateway) filterMessage(b []byte, srv *spec.MCPServer, isList bool) []byte {
 	var m message
 	if json.Unmarshal(b, &m) != nil {
 		return b
@@ -122,7 +127,9 @@ func (g *Gateway) filterMessage(b []byte, srv *spec.MCPServer, reqID json.RawMes
 		g.record(srv.Name, m.Method, "", false, "server requests are not relayed")
 		return nil
 	}
-	if isList && m.Method == "" && string(m.ID) == string(reqID) && len(m.Result) > 0 {
+	// While answering tools/list, every result is filtered, whatever its id:
+	// a result that slips past the id check must not carry other tools.
+	if isList && m.Method == "" && len(m.Result) > 0 {
 		m.Result = filterTools(m.Result, srv.Tools)
 		out, err := json.Marshal(m)
 		if err != nil {
@@ -133,17 +140,22 @@ func (g *Gateway) filterMessage(b []byte, srv *spec.MCPServer, reqID json.RawMes
 	return b
 }
 
+// maxEvent caps one server-sent event (all its lines together).
+const maxEvent = 16 << 20
+
 // relaySSE copies an event stream, passing each event's data through
 // filterMessage.
-func (g *Gateway) relaySSE(w http.ResponseWriter, body io.Reader, srv *spec.MCPServer, reqID json.RawMessage, isList bool) {
+func (g *Gateway) relaySSE(w http.ResponseWriter, body io.Reader, srv *spec.MCPServer, isList bool) {
 	fl, _ := w.(http.Flusher)
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 64*1024), 16<<20)
 	var event []string
 	var data []string
+	size := 0
 	flush := func() {
+		size = 0
 		if len(data) > 0 {
-			out := g.filterMessage([]byte(strings.Join(data, "\n")), srv, reqID, isList)
+			out := g.filterMessage([]byte(strings.Join(data, "\n")), srv, isList)
 			if out == nil {
 				event, data = nil, nil
 				return
@@ -151,7 +163,10 @@ func (g *Gateway) relaySSE(w http.ResponseWriter, body io.Reader, srv *spec.MCPS
 			for _, l := range event {
 				_, _ = io.WriteString(w, l+"\n")
 			}
-			_, _ = io.WriteString(w, "data: "+string(out)+"\n\n")
+			for _, l := range strings.Split(string(out), "\n") {
+				_, _ = io.WriteString(w, "data: "+l+"\n")
+			}
+			_, _ = io.WriteString(w, "\n")
 		} else if len(event) > 0 {
 			for _, l := range event {
 				_, _ = io.WriteString(w, l+"\n")
@@ -165,6 +180,10 @@ func (g *Gateway) relaySSE(w http.ResponseWriter, body io.Reader, srv *spec.MCPS
 	}
 	for sc.Scan() {
 		line := sc.Text()
+		if size += len(line) + 1; size > maxEvent {
+			g.record(srv.Name, "", "", false, "event from server too large")
+			return
+		}
 		switch {
 		case line == "":
 			flush()
