@@ -217,7 +217,7 @@ func (g *Gateway) post(w http.ResponseWriter, r *http.Request, srv *spec.MCPServ
 		return
 	}
 	var m message
-	if err := json.Unmarshal(body, &m); err != nil {
+	if err := decodeStrict(body, &m); err != nil {
 		writeJSON(w, rpcError(nil, -32700, "parse error"))
 		return
 	}
