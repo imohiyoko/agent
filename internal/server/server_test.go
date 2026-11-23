@@ -137,7 +137,8 @@ agents:
   - name: sh
     command: ["sh", "-c", "{prompt}"]
     workdir: %q
-`, name, member, role, upstream.URL, name, upstream.URL, name, work, fake, name, work)
+    home: %q
+`, name, member, role, upstream.URL, name, upstream.URL, name, work, fake, name, work, work+"/home")
 	}
 	extra := fmt.Sprintf(`  - name: second
     command: ["true"]
@@ -349,6 +350,7 @@ func TestRunInSandbox(t *testing.T) {
 		`ls ` + e.state + `/private 2>/dev/null | grep -q tokens && echo private=VISIBLE || echo private=hidden`,
 		`echo "mcp=$(curl -s -X POST -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' --noproxy '*' http://127.0.0.1:3129/mcp/fake -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')"`,
 		`env | grep -c secret- | sed 's/^/envsecrets=/'`,
+		`echo "home=$HOME"`,
 	}, "; ")
 	body, _ := json.Marshal(map[string]string{"agent": "sh", "prompt": script})
 	code, resp := e.call(alice, "POST", "/v1/namespaces/a/runs", string(body))
@@ -370,6 +372,7 @@ func TestRunInSandbox(t *testing.T) {
 		"private=hidden",
 		`"name":"fake-a"`,
 		"envsecrets=0",
+		"home=" + e.work + "/home",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
