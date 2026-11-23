@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/imohiyoko/agent/internal/spec"
 )
@@ -76,5 +77,21 @@ func TestAuthorizer(t *testing.T) {
 	}
 	if z.Allowed("root", nil, ActNamespaceRead) {
 		t.Error("nil namespace must be denied")
+	}
+}
+
+func TestTokenExpiry(t *testing.T) {
+	st := NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	_, live, _ := st.CreateTTL("alice", "", time.Hour)
+	_, dead, _ := st.CreateTTL("alice", "", time.Nanosecond)
+	time.Sleep(10 * time.Millisecond)
+	if p, _ := st.Authenticate(live); p != "alice" {
+		t.Error("live token rejected")
+	}
+	if p, _ := st.Authenticate(dead); p != "" {
+		t.Error("expired token accepted")
+	}
+	if _, _, err := st.CreateTTL("alice", "", -time.Hour); err == nil {
+		t.Error("negative ttl accepted")
 	}
 }

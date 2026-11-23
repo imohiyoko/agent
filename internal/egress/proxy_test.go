@@ -145,3 +145,70 @@ func TestPlainHTTPDenied(t *testing.T) {
 		t.Fatalf("status %d, want 403", resp.StatusCode)
 	}
 }
+
+// upstreamProxy is a minimal CONNECT proxy that records what it was asked.
+func upstreamProxy(t *testing.T, seen *[]string) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = append(*seen, r.Method+" "+r.Host)
+		if r.Method != http.MethodConnect {
+			http.Error(w, "connect only", http.StatusMethodNotAllowed)
+			return
+		}
+		up, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+		pipe(conn, up)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestUpstreamProxy(t *testing.T) {
+	var seen []string
+	upp := upstreamProxy(t, &seen)
+	upURL, _ := url.Parse(upp.URL)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.Header.Get("Authorization"))
+	}))
+	defer target.Close()
+	_, port, _ := net.SplitHostPort(target.Listener.Addr().String())
+	var pn int
+	fmt.Sscan(port, &pn)
+	ns := &spec.Namespace{Name: "t",
+		Network: spec.Network{Allow: []spec.HostRule{{Host: "127.0.0.1", Ports: []int{pn}}, {Host: "localhost", Ports: []int{pn}}}},
+		Credentials: []spec.Credential{{Name: "gh", Upstream: target.URL, Header: "Authorization", Secret: "t/key",
+			Rules: []spec.HTTPRule{{Methods: []string{"GET"}, Paths: []string{"/**"}}}}},
+	}
+	p, srv := setup(t, ns)
+	p.SetUpstream(http.ProxyURL(upURL))
+	p.Transport().TLSClientConfig = &tls.Config{RootCAs: target.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs}
+
+	// The guard still refuses loopback targets when an upstream proxy is used.
+	if got := connect(t, srv.Listener.Addr().String(), "localhost:"+port); !strings.Contains(got, "502") {
+		t.Errorf("loopback through upstream: %q", got)
+	}
+	if len(seen) != 0 {
+		t.Errorf("upstream proxy was asked for a refused target: %v", seen)
+	}
+
+	p.AllowLoopback = true
+	if got := connect(t, srv.Listener.Addr().String(), "127.0.0.1:"+port); !strings.Contains(got, "200") {
+		t.Fatalf("CONNECT through upstream: %q", got)
+	}
+	resp, err := client(srv.URL).Get("http://gh.creds.internal/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(b) != "s3cret" {
+		t.Errorf("credential route through upstream: %d %q", resp.StatusCode, b)
+	}
+	if len(seen) != 2 || !strings.HasPrefix(seen[0], "CONNECT 127.0.0.1:") || !strings.HasPrefix(seen[1], "CONNECT 127.0.0.1:") {
+		t.Errorf("upstream saw %v", seen)
+	}
+}

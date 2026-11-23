@@ -1,0 +1,21 @@
+# systemd のユーザー単位のサービス。
+#   cp deploy/systemd/nsctl.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now nsctl
+#   systemctl --user reload nsctl      # 宣言の読み直し(SIGHUP)
+# パスは自分の環境に合わせて直す。秘密の値をこのファイルに書かない。
+[Unit]
+Description=nsctl (namespaces for agents)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/nsctl serve -config %h/.config/nsctl/nsctl.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# nsctl の環境はサンドボックスに渡らないが、余計なものを持たせない
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+UMask=0077
+
+[Install]
+WantedBy=default.target

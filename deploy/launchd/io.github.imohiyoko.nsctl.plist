@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS の launchd 用。USERNAME を自分の名前に直してから:
+    cp deploy/launchd/io.github.imohiyoko.nsctl.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.imohiyoko.nsctl.plist
+    launchctl kill HUP gui/$(id -u)/io.github.imohiyoko.nsctl     # 宣言の読み直し
+  秘密の値をこのファイルに書かない。
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.imohiyoko.nsctl</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/USERNAME/.local/bin/nsctl</string>
+    <string>serve</string>
+    <string>-config</string>
+    <string>/Users/USERNAME/.config/nsctl/nsctl.yaml</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/USERNAME/.local/bin</string>
+  </dict>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardErrorPath</key>
+  <string>/Users/USERNAME/.local/state/nsctl/nsctl.log</string>
+</dict>
+</plist>

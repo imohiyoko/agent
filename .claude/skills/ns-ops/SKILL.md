@@ -29,13 +29,29 @@ description: nsctl を運用するときに使う。namespace の追加・変更
 ## トークン
 
 ```
-nsctl token create <主体> -note "<用途>" -config <設定>   # 値は 1 回だけ表示される
+nsctl token create <主体> -note "<用途>" -config <設定>   # 値は 1 回だけ表示される。既定の期限は 90 日(-ttl で変える)
 nsctl token list -config <設定>
 nsctl token revoke <id> -config <設定>
 ```
 
 - 主体の役割は、各 namespace の `members` で決まる。トークンを作っても、`members` に無ければ何もできない。
 - 用途ごとに分ける(人の端末、CI、別の仕組み)。使わなくなったら取り消す。
+- 期限の無いトークン(`-ttl 0`)は、人に頼まれたときだけ作る。
+
+## 点検
+
+```
+nsctl doctor -config <設定>
+```
+
+サンドボックスが動くか、状態と秘密のファイルの権限、宣言が参照する秘密があるか(値は出さない)、書き込み先とコマンドがあるか、期限切れのトークンを見る。
+`fail` が 1 つでもあれば、運用を始める前に直す。定期的に流し、`warn`(期限が近いトークンなど)も片付ける。
+
+## 常駐させる
+
+- Linux: `deploy/systemd/nsctl.service`(ユーザー単位)。読み直しは `systemctl --user reload nsctl`。
+- macOS: `deploy/launchd/io.github.imohiyoko.nsctl.plist`。読み直しは `launchctl kill HUP gui/$(id -u)/io.github.imohiyoko.nsctl`。
+- 会社の proxy の内側など、`nsctl` が直接外に出られないときは、設定の `upstream_proxy` に `env` か URL を書く。
 
 ## 起動と確認
 

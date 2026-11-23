@@ -370,3 +370,47 @@ func TestRunInSandbox(t *testing.T) {
 		t.Errorf("run state: %s", st)
 	}
 }
+
+func TestDoctorAndOverlap(t *testing.T) {
+	root := t.TempDir()
+	nsDir := filepath.Join(root, "namespaces")
+	os.MkdirAll(nsDir, 0o700)
+	state := filepath.Join(root, "state")
+	os.WriteFile(filepath.Join(nsDir, "a.yaml"), []byte(fmt.Sprintf(`version: 1
+name: a
+credentials:
+  - name: up
+    upstream: https://example.com
+    header: X-Key
+    secret: a/missing
+    rules:
+      - methods: [GET]
+        paths: ["/"]
+filesystem:
+  writable: [%q]
+agents:
+  - name: x
+    command: ["no-such-command-xyz"]
+    workdir: %q
+`, root, root)), 0o600)
+	cfg := &Config{NamespacesDir: nsDir, StateDir: state, SecretsFile: filepath.Join(root, "secrets.yaml"), Home: "/nonexistent-home", Listen: "127.0.0.1:7070"}
+	cfg.resolve(root)
+	os.WriteFile(cfg.SecretsFile, []byte("a/other: x\n"), 0o644)
+
+	if _, err := New(cfg); err == nil || !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("writable path over the state directory was accepted: %v", err)
+	}
+	var out strings.Builder
+	n := Doctor(cfg, &out)
+	for _, want := range []string{"secret a/missing", "no-such-command-xyz", "overlaps the state directory", "secrets " + cfg.SecretsFile} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("doctor output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if n == 0 {
+		t.Error("doctor found no problems")
+	}
+	if strings.Contains(out.String(), "a/other: x") {
+		t.Error("doctor printed a secret value")
+	}
+}
