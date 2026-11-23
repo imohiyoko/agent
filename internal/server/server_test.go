@@ -23,6 +23,7 @@ import (
 	"github.com/imohiyoko/agent/internal/mcpgw"
 	"github.com/imohiyoko/agent/internal/sandbox"
 	"github.com/imohiyoko/agent/internal/secrets"
+	"github.com/imohiyoko/agent/internal/spec"
 )
 
 // The test binary doubles as nsctl (sandbox-init) and as a fake MCP server.
@@ -546,3 +547,25 @@ func TestRemoteMCP(t *testing.T) {
 }
 
 func mcpgwHeader() string { return mcpgw.GatewayHeader }
+
+func TestClaudeAuthProblems(t *testing.T) {
+	ns := &spec.Namespace{Name: "a", Credentials: []spec.Credential{{Name: "claude"}}}
+	cases := []struct {
+		env  map[string]string
+		want string // "" = no problem
+	}{
+		{map[string]string{"ANTHROPIC_BASE_URL": "http://claude.creds.internal", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, ""},
+		{map[string]string{"ANTHROPIC_BASE_URL": "http://claude.creds.internal/", "ANTHROPIC_API_KEY": "p"}, ""},
+		{map[string]string{"ANTHROPIC_BASE_URL": "http://claude.creds.internal", "ANTHROPIC_API_KEY": "p", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, "set only one"},
+		{map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "p"}, "ANTHROPIC_BASE_URL is not set"},
+		{map[string]string{"ANTHROPIC_BASE_URL": "http://other.creds.internal", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, "not a credential route"},
+		{map[string]string{"ANTHROPIC_BASE_URL": "https://api.anthropic.com", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, "not a credential route"},
+		{map[string]string{}, ""},
+	}
+	for _, c := range cases {
+		got := strings.Join(claudeAuthProblems(ns, &spec.Agent{Env: c.env}), "; ")
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("env %v: got %q, want %q", c.env, got, c.want)
+		}
+	}
+}

@@ -395,6 +395,9 @@ func (ns *Namespace) Validate(home string) error {
 			if v.Secret != "" {
 				checkSecret(f+".env."+k, v.Secret)
 			}
+			if looksLikeKey(v.Value) {
+				bad("%s.env.%s: looks like a real key; use {secret: %s/<name>}", f, k, ns.Name)
+			}
 		}
 	}
 
@@ -424,9 +427,14 @@ func (ns *Namespace) Validate(home string) error {
 		if !ns.isWritable(ns.Agents[i].Workdir) {
 			bad("%s: workdir %q must be inside filesystem.writable", f, a.Workdir)
 		}
-		for k := range a.Env {
+		for k, v := range a.Env {
 			if !envRe.MatchString(k) {
 				bad("%s.env: %q is not a valid variable name", f, k)
+			}
+			// Agents never get secrets: they reach APIs through credential
+			// routes, which add the key outside the sandbox.
+			if looksLikeKey(v) {
+				bad("%s.env.%s: looks like a real key; agents get keys only through credentials (routes)", f, k)
 			}
 		}
 		if a.Home != "" {
@@ -444,6 +452,26 @@ func (ns *Namespace) Validate(home string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// keyPrefixes start well-known API keys and tokens. A declaration that holds
+// one is refused, since declarations are kept in git (invariant: no secret
+// values in declarations).
+var keyPrefixes = []string{
+	"sk-ant-",                             // Anthropic API keys and Claude OAuth tokens
+	"sk-proj-",                            // OpenAI
+	"ghp_", "gho_", "ghs_", "github_pat_", // GitHub
+	"xoxb-", "xoxp-", // Slack
+	"AKIA", // AWS access key id
+}
+
+func looksLikeKey(v string) bool {
+	for _, p := range keyPrefixes {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (ns *Namespace) isWritable(p string) bool {

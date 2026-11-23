@@ -18,14 +18,14 @@ description: 設計の決定(土台、境界、認証認可、通信、MCP、API
 2. 下の型で書く。日本語、短い文。
 3. `docs/adr/README.md` の表に 1 行足す(CI が確かめる)。
 4. 既存の ADR を置き換えるなら、新しい ADR に「置き換えるもの」を書き、古い ADR の状態を `Superseded by NNNN` にする。
-5. 状態は `Proposed` で出す。`Accepted` にするのは人が決めたとき(人の言葉を、日付と一緒に「決めた人」に書く)。
+5. 状態は `Accepted` で出してよい(2026-11-23 に imohiyoko が「ADR は何も聞かなくていい、自由に実装して。その代わりドキュメントはちゃんと残すこと」と、決定を agent に任せた。AGENTS.md の 1 を見る)。「決めた人」には「agent(imohiyoko の委任、2026-11-23)」と書く。人が使いにくいと言ったら、その言葉と日付を書いて見直す。
 
 ## 型
 
 ```markdown
 # ADR NNNN: <決定を 1 文で>
 
-- 状態: Proposed
+- 状態: Accepted
 - 日付: YYYY-MM-DD
 - きっかけ: <人の依頼、または困りごと>
 

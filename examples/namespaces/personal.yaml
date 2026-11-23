@@ -1,0 +1,43 @@
+# Claude Code を Max / Pro プラン(API キーなし)で動かす namespace の例。
+# 手順と理由は docs/claude-code.md の「Max / Pro プランで動かす」を見る。
+version: 1
+name: personal
+
+members:
+  - principal: imohiyoko
+    role: operator
+
+# Claude Code の API の通信は下の認証情報の経路を通るので、
+# network.allow には何も書かなくてよい
+network:
+  allow: []
+
+credentials:
+  # agent は http://claude.creds.internal に送る。proxy が規則を確かめて
+  # Authorization: Bearer <OAuth トークン> を付け、https://api.anthropic.com に送る。
+  # トークンは `claude setup-token` で作り、`nsctl secret set personal/claude-oauth` で入れる
+  - name: claude
+    upstream: https://api.anthropic.com
+    header: Authorization
+    format: "Bearer {value}"
+    secret: personal/claude-oauth
+    rules:
+      - methods: [POST]
+        paths: ["/v1/messages", "/v1/messages/count_tokens"]
+
+filesystem:
+  writable:
+    - ~/work/personal
+    - ~/agents/personal
+
+agents:
+  - name: claude
+    command: ["claude", "-p", "{prompt}"]
+    workdir: ~/work/personal
+    home: ~/agents/personal
+    timeout: 30m
+    env:
+      ANTHROPIC_BASE_URL: http://claude.creds.internal
+      # 置き換え用の値。本物のトークンは proxy が付ける。ANTHROPIC_API_KEY は置かない
+      CLAUDE_CODE_OAUTH_TOKEN: placeholder-replaced-by-proxy
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"

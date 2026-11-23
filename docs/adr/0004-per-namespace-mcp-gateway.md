@@ -1,6 +1,6 @@
 # ADR 0004: MCP は namespace ごとの gateway を通し、使える server と tool を namespace で切り替える
 
-- 状態: Proposed
+- 状態: Accepted(2026-11-23、imohiyoko の委任により agent が決定)
 - 日付: 2026-11-23
 - きっかけ(人の依頼、2026-11-23): namespace ごとに MCP の権限を切り替える方法を考えて実装する。
 

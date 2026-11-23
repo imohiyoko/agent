@@ -141,6 +141,9 @@ func Doctor(c *Config, w io.Writer) int {
 			if _, err := exec.LookPath(a.Command[0]); err != nil {
 				line("fail", "%s: agent %s: command %s not found", name, a.Name, a.Command[0])
 			}
+			for _, msg := range claudeAuthProblems(ns, &a) {
+				line("warn", "%s: agent %s: %s", name, a.Name, msg)
+			}
 		}
 		for _, m := range ns.MCP.Servers {
 			if len(m.Command) == 0 {
@@ -174,4 +177,29 @@ func firstLine(b []byte) string {
 		}
 	}
 	return string(b)
+}
+
+// claudeAuthProblems finds Claude Code settings that would not work in a
+// namespace: both an API key and a subscription (OAuth) token, or a base URL
+// that is not one of the namespace's credential routes.
+func claudeAuthProblems(ns *spec.Namespace, a *spec.Agent) []string {
+	var out []string
+	_, apiKey := a.Env["ANTHROPIC_API_KEY"]
+	_, oauth := a.Env["CLAUDE_CODE_OAUTH_TOKEN"]
+	if apiKey && oauth {
+		out = append(out, "both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set; Claude Code uses the API key, so set only one")
+	}
+	base, ok := a.Env["ANTHROPIC_BASE_URL"]
+	if !ok {
+		if apiKey || oauth {
+			out = append(out, "ANTHROPIC_BASE_URL is not set; set it to http://<route>"+spec.CredsSuffix+" so the proxy adds the real key")
+		}
+		return out
+	}
+	host, isHTTP := strings.CutPrefix(base, "http://")
+	route, isRoute := strings.CutSuffix(strings.TrimSuffix(host, "/"), spec.CredsSuffix)
+	if !isHTTP || !isRoute || ns.Credential(route) == nil {
+		out = append(out, fmt.Sprintf("ANTHROPIC_BASE_URL %q is not a credential route of this namespace (http://<route>%s)", base, spec.CredsSuffix))
+	}
+	return out
 }

@@ -6,7 +6,7 @@ agent 自身には認証を持たせない。agent ができることは、入�
 - 設計: [docs/design.md](docs/design.md)、決定: [docs/adr/](docs/adr/)
 - ここで作業する agent の決まり: [AGENTS.md](AGENTS.md)
 - 動く環境: macOS(`sandbox-exec`)と Linux(`bwrap` が要る)
-- Claude Code を中で動かす: [docs/claude-code.md](docs/claude-code.md)
+- Claude Code を中で動かす(API キー、Max / Pro プラン): [docs/claude-code.md](docs/claude-code.md)
 - 運用(点検、常駐、トークン、事故のとき): [.claude/skills/ns-ops/SKILL.md](.claude/skills/ns-ops/SKILL.md)
 
 ## 使い方
@@ -25,7 +25,7 @@ export NSCTL_TOKEN=<トークン>
 ./nsctl logs research <run-id>
 ```
 
-認証情報の値は `~/.config/nsctl/secrets.yaml`(`chmod 600`)に書く。リポジトリには入れない。
+認証情報の値は `~/.config/nsctl/secrets.yaml`(`chmod 600`)に置く。リポジトリには入れない。`nsctl secret set <namespace>/<name>` で入れると、値は画面にも履歴にも残らない(`nsctl secret list` は名前だけを出す)。
 
 ```yaml
 research/anthropic: env:ANTHROPIC_API_KEY
