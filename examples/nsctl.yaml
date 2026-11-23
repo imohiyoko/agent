@@ -1,0 +1,8 @@
+# nsctl の設定の例。相対パスはこのファイルからの相対。
+namespaces_dir: namespaces
+state_dir: ~/.local/state/nsctl
+# 認証情報の値はリポジトリの外に置く(chmod 600)。値に "env:VAR" と書くと環境変数から読む
+secrets_file: ~/.config/nsctl/secrets.yaml
+listen: 127.0.0.1:7070
+admins: []
+max_runs_per_namespace: 4

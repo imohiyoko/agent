@@ -1,0 +1,7 @@
+# 秘密と実行時の状態は入れない
+.env
+.env.*
+secrets.yaml
+tokens.json
+/nsctl
+/dist/
