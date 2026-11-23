@@ -212,3 +212,64 @@ func TestUpstreamProxy(t *testing.T) {
 		t.Errorf("upstream saw %v", seen)
 	}
 }
+
+// The proxy also serves routes at /creds/<route>/ when called directly, with
+// the same rules (for agents such as Gemini CLI that take plain http only on
+// loopback).
+func TestCredentialRouteByPath(t *testing.T) {
+	var gotAuth, gotPath string
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.Path
+		io.WriteString(w, "ok")
+	}))
+	defer up.Close()
+	rules := []spec.HTTPRule{{Methods: []string{"GET"}, Paths: []string{"/repos/me/**"}}}
+	ns := &spec.Namespace{
+		Name: "t",
+		Credentials: []spec.Credential{
+			{Name: "gh", Upstream: up.URL + "/api", Header: "Authorization", Format: "Bearer {value}", Secret: "t/key", Rules: rules},
+			{Name: "gw", Upstream: up.URL, Header: "Authorization", Secret: "t/key", Rules: rules},
+		},
+		MCP: spec.MCP{Servers: []spec.MCPServer{{Name: "remote", Credential: "gw", Path: "/mcp", Tools: []string{"x"}}}},
+	}
+	p, srv := setup(t, ns)
+	p.AllowLoopback = true
+	p.Transport().TLSClientConfig = &tls.Config{RootCAs: up.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs}
+
+	resp, err := http.Get(srv.URL + "/creds/gh/repos/me/x?a=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 || gotAuth != "Bearer s3cret" || gotPath != "/api/repos/me/x" {
+		t.Fatalf("status %d auth %q path %q", resp.StatusCode, gotAuth, gotPath)
+	}
+
+	raw := func(path string) string {
+		c, err := net.Dial("tcp", srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", path)
+		line, _ := bufio.NewReader(c).ReadString('\n')
+		return strings.TrimSpace(line)
+	}
+	for _, path := range []string{
+		"/creds/gh/repos/other/x",         // not in the rules
+		"/creds/gh/repos/me/../../admin",  // traversal
+		"/creds/gh/repos/me/%2e%2e/admin", // encoded traversal
+		"/creds/nope/repos/me/x",          // no such route
+		"/creds/gw/repos/me/x",            // only for the MCP gateway
+		"/creds/",                         // no route
+	} {
+		gotAuth = ""
+		if got := raw(path); !strings.Contains(got, "403") || gotAuth != "" {
+			t.Errorf("%s: %q (upstream saw auth %q)", path, got, gotAuth)
+		}
+	}
+	// Anything else on the proxy's own address is still refused.
+	if got := raw("/other"); !strings.Contains(got, "400") {
+		t.Errorf("/other: %q", got)
+	}
+}

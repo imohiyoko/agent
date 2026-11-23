@@ -160,10 +160,25 @@ type Agent struct {
 	TimeoutDur time.Duration `yaml:"-"`
 }
 
-// Placeholders that may appear in Agent.Command.
+// Placeholders that may appear in Agent.Command and Agent.Interactive.
+// {mcp_url} and {creds_url} may also appear in Agent.Env values.
 const (
-	PromptPlaceholder    = "{prompt}"
+	// PromptPlaceholder is the prompt, as one whole argument.
+	PromptPlaceholder = "{prompt}"
+	// MCPConfigPlaceholder is the path of a JSON file in Claude Code's
+	// --mcp-config format, listing the namespace's MCP servers.
 	MCPConfigPlaceholder = "{mcp_config}"
+	// MCPURLPlaceholder is the MCP gateway's base URL as the sandbox sees it,
+	// for example http://127.0.0.1:3129/mcp. Server <name> is at
+	// {mcp_url}/<name> (Streamable HTTP). For agents that do not read
+	// Claude Code's format (Codex CLI, Gemini CLI, ...).
+	MCPURLPlaceholder = "{mcp_url}"
+	// CredsURLPlaceholder is the base URL of the namespace's credential
+	// routes on loopback, for example http://127.0.0.1:3128/creds. Route
+	// <name> is at {creds_url}/<name>, the same as
+	// http://<name>.creds.internal. For agents that take plain http only on
+	// loopback (Gemini CLI) or do not use HTTP_PROXY for their API.
+	CredsURLPlaceholder = "{creds_url}"
 )
 
 // Set is every namespace declaration, by name.
@@ -427,6 +442,18 @@ func (ns *Namespace) Validate(home string) error {
 		for _, arg := range a.Interactive {
 			if strings.Contains(arg, PromptPlaceholder) {
 				bad("%s: interactive must not use %s (the person types the prompts)", f, PromptPlaceholder)
+			}
+		}
+		if len(ns.MCP.Servers) == 0 {
+			all := append(append([]string{}, a.Command...), a.Interactive...)
+			for _, v := range a.Env {
+				all = append(all, v)
+			}
+			for _, arg := range all {
+				if strings.Contains(arg, MCPConfigPlaceholder) || strings.Contains(arg, MCPURLPlaceholder) {
+					bad("%s: %s and %s need mcp.servers in this namespace", f, MCPConfigPlaceholder, MCPURLPlaceholder)
+					break
+				}
 			}
 		}
 		if a.Workdir == "" {

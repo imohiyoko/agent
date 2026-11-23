@@ -11,3 +11,4 @@
 | [0003](0003-authn-authz-and-external-api.md) | 認証は人と仕組みだけに持たせ、namespace ごとの役割で認可し、外からの指示は API で受ける | Accepted |
 | [0004](0004-per-namespace-mcp-gateway.md) | MCP は namespace ごとの gateway を通し、使える server と tool を namespace で切り替える | Accepted |
 | [0005](0005-interactive-sessions-and-terminal-multiplexers.md) | 人の端末で agent を対話で動かす(nsctl shell)。端末の道具(cmux など)とは組み合わせて使う | Accepted |
+| [0006](0006-agent-neutral-endpoints.md) | どの coding agent でも同じ境界で動かすため、経路と gateway の URL を置き換えと環境変数で渡す | Accepted |

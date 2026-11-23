@@ -225,9 +225,26 @@ func deny(w http.ResponseWriter, code int, reason string) {
 }
 
 // ServeHTTP implements the proxy.
+// CredsPathPrefix is the path under which the proxy also serves credential
+// routes when it is called directly instead of as a proxy:
+// http://127.0.0.1:3128/creds/<route>/<path> is the same as
+// http://<route>.creds.internal/<path>, with the same rules.
+const CredsPathPrefix = "/creds/"
+
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
 		p.connect(w, r)
+		return
+	}
+	// http://<proxy>/creds/<route>/<path>: the same credential route, for
+	// agents that accept plain http only on loopback (Gemini CLI) or do not
+	// use HTTP_PROXY for their API. See CredsPathPrefix.
+	if r.URL.Host == "" && strings.HasPrefix(r.URL.Path, CredsPathPrefix) {
+		name, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, CredsPathPrefix), "/")
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/" + rest
+		r2.URL.RawPath = ""
+		p.credential(w, r2, name)
 		return
 	}
 	host := r.URL.Host

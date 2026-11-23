@@ -140,6 +140,9 @@ agents:
     command: ["sh", "-c", "{prompt}"]
     workdir: %q
     home: %q
+    env:
+      FAKE_MCP: "{mcp_url}/fake"
+      UP_BASE: "{creds_url}/up"
 `, name, member, role, upstream.URL, name, upstream.URL, name, work, fake, name, work, work+"/home")
 	}
 	extra := fmt.Sprintf(`  - name: second
@@ -358,7 +361,10 @@ func TestRunInSandbox(t *testing.T) {
 		`echo "connect=$(curl -s -o /dev/null -w '%{http_connect}' --max-time 5 https://example.com/)"`,
 		`curl -s --noproxy '*' --max-time 3 http://1.1.1.1/ >/dev/null 2>&1 && echo direct=OPEN || echo direct=blocked`,
 		`ls ` + e.state + `/private 2>/dev/null | grep -q tokens && echo private=VISIBLE || echo private=hidden`,
-		`echo "mcp=$(curl -s -X POST -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' --noproxy '*' http://127.0.0.1:3129/mcp/fake -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')"`,
+		// No --noproxy: NO_PROXY must already send loopback (the gateway) direct.
+		`echo "mcp=$(curl -s -X POST -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' "$NSCTL_MCP_URL/fake" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')"`,
+		`echo "mcpenv=$FAKE_MCP"`,
+		`echo "credpath=$(curl -s "$UP_BASE/ok")"`,
 		`env | grep -c secret- | sed 's/^/envsecrets=/'`,
 		`echo "home=$HOME"`,
 	}, "; ")
@@ -383,6 +389,8 @@ func TestRunInSandbox(t *testing.T) {
 		`"name":"fake-a"`,
 		"envsecrets=0",
 		"home=" + e.work + "/home",
+		"mcpenv=http://127.0.0.1:3129/mcp/fake",
+		"credpath=upstream-ok",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -565,6 +573,8 @@ func TestClaudeAuthProblems(t *testing.T) {
 	}{
 		{map[string]string{"ANTHROPIC_BASE_URL": "http://claude.creds.internal", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, ""},
 		{map[string]string{"ANTHROPIC_BASE_URL": "http://claude.creds.internal/", "ANTHROPIC_API_KEY": "p"}, ""},
+		{map[string]string{"ANTHROPIC_BASE_URL": "{creds_url}/claude", "ANTHROPIC_API_KEY": "p"}, ""},
+		{map[string]string{"ANTHROPIC_BASE_URL": "{creds_url}/other", "ANTHROPIC_API_KEY": "p"}, "not a credential route"},
 		{map[string]string{"ANTHROPIC_BASE_URL": "http://claude.creds.internal", "ANTHROPIC_API_KEY": "p", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, "set only one"},
 		{map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "p"}, "ANTHROPIC_BASE_URL is not set"},
 		{map[string]string{"ANTHROPIC_BASE_URL": "http://other.creds.internal", "CLAUDE_CODE_OAUTH_TOKEN": "p"}, "not a credential route"},
@@ -659,5 +669,25 @@ func TestShell(t *testing.T) {
 	}
 	if r := e.srv.runs.get("a", first.Run); r.State != StateStopped {
 		t.Errorf("state %s, want stopped", r.State)
+	}
+}
+
+func TestRouteProblems(t *testing.T) {
+	ns := &spec.Namespace{Name: "a", Credentials: []spec.Credential{{Name: "openai"}}}
+	got := strings.Join(routeProblems(ns, &spec.Agent{Env: map[string]string{
+		"OPENAI_BASE_URL":        "http://openai.creds.internal/v1",
+		"GOOGLE_GEMINI_BASE_URL": "http://gemini.creds.internal",
+		"X_BASE_URL":             "{creds_url}/missing",
+		"Y_BASE_URL":             "{creds_url}/openai",
+		"Z_BASE_URL":             "{creds_url}/openai_backup/v1",
+		"OTHER":                  "https://openai.creds.internal/v1",
+	}}), "; ")
+	for _, want := range []string{`route "gemini"`, "OTHER uses https://", `route "missing"`, `route "openai_backup"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "OPENAI_BASE_URL") || strings.Contains(got, "Y_BASE_URL") {
+		t.Errorf("a declared route was reported: %q", got)
 	}
 }

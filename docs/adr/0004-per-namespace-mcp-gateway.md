@@ -19,7 +19,7 @@
 mcp:
   servers:
     - name: files
-      command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
+      command: ["mcp-server-filesystem", "/data"]   # 前もって npm install -g で入れる
       env:
         SOME_TOKEN: {secret: research/some-token}
       tools: [read_file, list_directory]   # 許す tool。書いていないものは見せない

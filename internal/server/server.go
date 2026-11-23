@@ -341,7 +341,11 @@ func baseEnv(home string, ep sandbox.Endpoints, ns, term string) []string {
 		p := "http://" + ep.Proxy
 		env = append(env,
 			"HTTP_PROXY="+p, "HTTPS_PROXY="+p, "http_proxy="+p, "https_proxy="+p,
-			"ALL_PROXY="+p, "all_proxy="+p, "NO_PROXY=", "no_proxy=")
+			"ALL_PROXY="+p, "all_proxy="+p,
+			// The MCP gateway is on loopback and must be reached directly.
+			// Only this namespace's own ports are reachable on loopback
+			// (Linux: the sandbox's own network; macOS: the profile).
+			"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost")
 	}
 	return env
 }
@@ -450,6 +454,21 @@ func (s *Server) agentCommand(rt *nsRuntime, ns *spec.Namespace, a *spec.Agent, 
 	if err := os.WriteFile(mcpPath, cfgJSON, 0o600); err != nil {
 		return nil, err
 	}
+	// Placeholders in the declared arguments and env values.
+	mcpURL := ""
+	if ep.MCP != "" {
+		mcpURL = "http://" + ep.MCP + "/mcp"
+	}
+	credsURL := "http://" + ep.Proxy + strings.TrimSuffix(egress.CredsPathPrefix, "/")
+	fill := strings.NewReplacer(
+		spec.MCPConfigPlaceholder, ep.Files["mcp.json"],
+		spec.MCPURLPlaceholder, mcpURL,
+		spec.CredsURLPlaceholder, credsURL,
+	).Replace
+	envFill := strings.NewReplacer(
+		spec.MCPURLPlaceholder, mcpURL,
+		spec.CredsURLPlaceholder, credsURL,
+	).Replace
 	var argv []string
 	for i, arg := range l.argv(a) {
 		// The prompt is used as given; only the declared arguments are
@@ -458,7 +477,7 @@ func (s *Server) agentCommand(rt *nsRuntime, ns *spec.Namespace, a *spec.Agent, 
 			argv = append(argv, arg)
 			continue
 		}
-		argv = append(argv, strings.ReplaceAll(arg, spec.MCPConfigPlaceholder, ep.Files["mcp.json"]))
+		argv = append(argv, fill(arg))
 	}
 	sp.Command = argv
 	home := s.cfg.Home
@@ -475,8 +494,12 @@ func (s *Server) agentCommand(rt *nsRuntime, ns *spec.Namespace, a *spec.Agent, 
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	env = append(env, "NSCTL_CREDS_URL="+credsURL)
+	if mcpURL != "" {
+		env = append(env, "NSCTL_MCP_URL="+mcpURL)
+	}
 	for _, k := range keys {
-		env = append(env, k+"="+a.Env[k])
+		env = append(env, k+"="+envFill(a.Env[k]))
 	}
 	sp.Env = env
 	return sandbox.Command(sp)

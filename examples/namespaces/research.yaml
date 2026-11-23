@@ -54,8 +54,10 @@ filesystem:
 
 mcp:
   servers:
+    # 前もって入れておく: npm install -g @modelcontextprotocol/server-filesystem
+    # (中から npm には繋げないので、npx -y での取得はできない)
     - name: files
-      command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      command: ["mcp-server-filesystem", "/tmp"]
       tools: [read_file, list_directory]
     - name: github
       credential: github-mcp
