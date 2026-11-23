@@ -1,0 +1,58 @@
+# namespace の宣言の例。書いていないものはすべて拒否される。
+version: 1
+name: research
+
+# この namespace を API で操作できる主体と役割(viewer / operator / admin)
+members:
+  - principal: imohiyoko
+    role: operator
+
+# 外への通信(CONNECT)。HTTPS の中身(パス)は見ない
+network:
+  allow:
+    - host: pypi.org
+      ports: [443]
+    - host: "*.pythonhosted.org"
+      ports: [443]
+
+# 認証情報の経路。agent は http://anthropic.creds.internal に送り、
+# proxy が規則を確かめて x-api-key を付け、https://api.anthropic.com に送る
+credentials:
+  - name: anthropic
+    upstream: https://api.anthropic.com
+    header: x-api-key
+    secret: research/anthropic
+    rules:
+      - methods: [POST]
+        paths: ["/v1/messages", "/v1/messages/count_tokens"]
+  - name: github
+    upstream: https://api.github.com
+    header: Authorization
+    format: "Bearer {value}"
+    secret: research/github
+    rules:
+      - methods: [GET]
+        paths: ["/repos/imohiyoko/**"]
+
+filesystem:
+  writable:
+    - ~/work/research
+    - ~/.claude
+  deny_read:
+    - ~/.ssh
+    - ~/.aws
+    - ~/.config/gh
+
+mcp:
+  servers:
+    - name: files
+      command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      tools: [read_file, list_directory]
+
+agents:
+  - name: claude
+    command: ["claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config"]
+    workdir: ~/work/research
+    env:
+      ANTHROPIC_BASE_URL: http://anthropic.creds.internal
+      ANTHROPIC_API_KEY: placeholder-replaced-by-proxy
