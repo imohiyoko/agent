@@ -59,6 +59,21 @@ type Server struct {
 	errc   chan error
 }
 
+// checkOverlap refuses writable paths that contain, or are inside, the nsctl
+// state directory or the secrets file.
+func checkOverlap(cfg *Config, set *spec.Set) error {
+	for _, name := range set.Names() {
+		for _, d := range set.Namespaces[name].Filesystem.Writable {
+			for _, p := range []string{cfg.StateDir, cfg.SecretsFile} {
+				if isInside(d, p) || isInside(p, d) {
+					return fmt.Errorf("namespace %s: writable path %s overlaps %s", name, d, p)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // nsSet returns the current declarations.
 func (s *Server) nsSet() *spec.Set { return s.setp.Load() }
 
@@ -66,6 +81,9 @@ func (s *Server) nsSet() *spec.Set { return s.setp.Load() }
 func New(cfg *Config) (*Server, error) {
 	set, err := spec.LoadDir(cfg.NamespacesDir, cfg.Home)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkOverlap(cfg, set); err != nil {
 		return nil, err
 	}
 	self, err := os.Executable()
@@ -150,6 +168,9 @@ func (s *Server) startNamespace(parent context.Context, ns *spec.Namespace, errc
 	ctx, cancel := context.WithCancel(parent)
 	rt := &nsRuntime{ns: ns, cancel: cancel}
 	rt.proxy = egress.New(ns, s.secrets, s.log)
+	if fn := s.cfg.upstreamFunc(); fn != nil {
+		rt.proxy.SetUpstream(fn)
+	}
 	if s.proxyHook != nil {
 		s.proxyHook(rt.proxy)
 	}
@@ -202,6 +223,9 @@ func (s *Server) Reload() (ReloadResult, error) {
 	var res ReloadResult
 	set, err := spec.LoadDir(s.cfg.NamespacesDir, s.cfg.Home)
 	if err != nil {
+		return res, err
+	}
+	if err := checkOverlap(s.cfg, set); err != nil {
 		return res, err
 	}
 	s.mu.Lock()

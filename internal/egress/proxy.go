@@ -13,6 +13,7 @@
 package egress
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -37,7 +38,12 @@ type Proxy struct {
 	secrets secrets.Source
 	log     *audit.Log
 	dialer  *net.Dialer
+	plain   *net.Dialer
 	tr      *http.Transport
+
+	// upstream, if set, picks the HTTP proxy nsctl itself must use for a URL
+	// (for networks where nsctl cannot connect out directly).
+	upstream func(*http.Request) (*url.URL, error)
 
 	// AllowLoopback is for tests only: it lets the proxy reach test servers
 	// on 127.0.0.1.
@@ -49,9 +55,16 @@ func New(ns *spec.Namespace, src secrets.Source, log *audit.Log) *Proxy {
 	p := &Proxy{secrets: src, log: log}
 	p.ns.Store(ns)
 	p.dialer = &net.Dialer{Timeout: 15 * time.Second, Control: p.checkAddr}
+	p.plain = &net.Dialer{Timeout: 15 * time.Second}
 	p.tr = &http.Transport{
-		Proxy:                 nil, // never chain to another proxy from the environment
-		DialContext:           p.dialer.DialContext,
+		// Only the upstream set with SetUpstream, never the environment.
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			if p.upstream == nil {
+				return nil, nil
+			}
+			return p.upstream(r)
+		},
+		DialContext:           p.dial,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          32,
 		IdleConnTimeout:       60 * time.Second,
@@ -66,6 +79,108 @@ func (p *Proxy) Name() string { return p.ns.Load().Name }
 
 // SetNamespace replaces the rules (for reloads).
 func (p *Proxy) SetNamespace(ns *spec.Namespace) { p.ns.Store(ns) }
+
+// SetUpstream makes nsctl reach the internet through an HTTP proxy. fn
+// returns the proxy for a URL, or nil to connect directly (for example
+// http.ProxyFromEnvironment). Call it before serving.
+func (p *Proxy) SetUpstream(fn func(*http.Request) (*url.URL, error)) { p.upstream = fn }
+
+func (p *Proxy) upstreamFor(scheme, hostport string) *url.URL {
+	if p.upstream == nil {
+		return nil
+	}
+	u, err := p.upstream(&http.Request{URL: &url.URL{Scheme: scheme, Host: hostport}})
+	if err != nil {
+		return nil
+	}
+	return u
+}
+
+// dial connects to addr. The upstream proxy itself may be on loopback; every
+// other address goes through the guarded dialer.
+func (p *Proxy) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	if p.upstream != nil && p.isUpstreamAddr(addr) {
+		return p.plain.DialContext(ctx, network, addr)
+	}
+	return p.dialer.DialContext(ctx, network, addr)
+}
+
+func (p *Proxy) isUpstreamAddr(addr string) bool {
+	for _, scheme := range []string{"https", "http"} {
+		if u := p.upstreamFor(scheme, "example.invalid:443"); u != nil && hostPortOf(u) == addr {
+			return true
+		}
+	}
+	return false
+}
+
+func hostPortOf(u *url.URL) string {
+	if u.Port() != "" {
+		return u.Host
+	}
+	if u.Scheme == "https" {
+		return net.JoinHostPort(u.Hostname(), "443")
+	}
+	return net.JoinHostPort(u.Hostname(), "80")
+}
+
+// checkHost applies the address guard by name, for connections that an
+// upstream proxy resolves. It resolves the name itself; a name that changes
+// its answer between this check and the proxy's own lookup is not caught.
+func (p *Proxy) checkHost(ctx context.Context, host string) error {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		if p.AllowLoopback {
+			return nil
+		}
+		return fmt.Errorf("%s is not reachable from a namespace", host)
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return err
+	}
+	for _, ip := range ips {
+		if err := p.checkAddr("tcp", net.JoinHostPort(ip.IP.String(), "0"), nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dialTarget opens a TCP connection to hostname:port for a CONNECT tunnel,
+// through the upstream proxy when one applies.
+func (p *Proxy) dialTarget(ctx context.Context, hostname string, port int) (net.Conn, error) {
+	target := net.JoinHostPort(hostname, strconv.Itoa(port))
+	up := p.upstreamFor("https", target)
+	if up == nil {
+		return p.dialer.DialContext(ctx, "tcp", target)
+	}
+	if err := p.checkHost(ctx, hostname); err != nil {
+		return nil, err
+	}
+	c, err := p.plain.DialContext(ctx, "tcp", hostPortOf(up))
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	_ = c.SetReadDeadline(time.Now().Add(30 * time.Second))
+	br := bufio.NewReader(c)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		c.Close()
+		return nil, fmt.Errorf("upstream proxy: %s", resp.Status)
+	}
+	_ = c.SetReadDeadline(time.Time{})
+	if br.Buffered() > 0 {
+		c.Close()
+		return nil, fmt.Errorf("upstream proxy sent data early")
+	}
+	return c, nil
+}
 
 // Transport is exposed for tests that need to trust a test TLS server.
 func (p *Proxy) Transport() *http.Transport { return p.tr }
@@ -125,6 +240,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deny(w, http.StatusForbidden, hostname+" is not allowed in this namespace")
 		return
 	}
+	if p.upstreamFor("http", host) != nil {
+		if err := p.checkHost(r.Context(), hostname); err != nil {
+			p.record("egress", r.Method, host, false, err.Error())
+			deny(w, http.StatusBadGateway, "cannot connect")
+			return
+		}
+	}
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
 	removeHopHeaders(out.Header)
@@ -151,7 +273,7 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 		deny(w, http.StatusForbidden, hostname+" is not allowed in this namespace")
 		return
 	}
-	up, err := p.dialer.DialContext(r.Context(), "tcp", target)
+	up, err := p.dialTarget(r.Context(), hostname, port)
 	if err != nil {
 		p.record("egress", "CONNECT", target, false, err.Error())
 		deny(w, http.StatusBadGateway, "cannot connect")
@@ -202,6 +324,13 @@ func (p *Proxy) credential(w http.ResponseWriter, r *http.Request, name string) 
 	if err != nil {
 		deny(w, http.StatusInternalServerError, "bad upstream")
 		return
+	}
+	if p.upstreamFor("https", up.Host) != nil {
+		if err := p.checkHost(r.Context(), up.Hostname()); err != nil {
+			p.record("credential", r.Method, target, false, err.Error())
+			deny(w, http.StatusBadGateway, "upstream not reachable")
+			return
+		}
 	}
 	out := r.Clone(r.Context())
 	out.RequestURI = ""

@@ -25,12 +25,16 @@ const TokenPrefix = "nsk_"
 
 // Token is a stored token. The value itself is never stored.
 type Token struct {
-	ID        string    `json:"id"`
-	Principal string    `json:"principal"`
-	Note      string    `json:"note,omitempty"`
-	Hash      string    `json:"sha256"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string     `json:"id"`
+	Principal string     `json:"principal"`
+	Note      string     `json:"note,omitempty"`
+	Hash      string     `json:"sha256"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
+
+// Expired reports whether the token has expired at now.
+func (t Token) Expired(now time.Time) bool { return t.ExpiresAt != nil && !now.Before(*t.ExpiresAt) }
 
 // Store keeps token hashes in a JSON file with mode 0600.
 type Store struct {
@@ -71,9 +75,17 @@ func (s *Store) save(ts []Token) error {
 	return os.Rename(tmp, s.path)
 }
 
-// Create makes a token for principal and returns its value. The value is
-// shown once and cannot be recovered.
+// Create makes a token for principal that never expires. See CreateTTL.
 func (s *Store) Create(principal, note string) (Token, string, error) {
+	return s.CreateTTL(principal, note, 0)
+}
+
+// CreateTTL makes a token for principal and returns its value. The value is
+// shown once and cannot be recovered. ttl 0 means it never expires.
+func (s *Store) CreateTTL(principal, note string, ttl time.Duration) (Token, string, error) {
+	if ttl < 0 {
+		return Token{}, "", fmt.Errorf("ttl must not be negative")
+	}
 	if !spec.IsPrincipalName(principal) {
 		return Token{}, "", fmt.Errorf("principal %q is not a valid name", principal)
 	}
@@ -98,6 +110,10 @@ func (s *Store) Create(principal, note string) (Token, string, error) {
 		Note:      note,
 		Hash:      hash(value),
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
+	}
+	if ttl > 0 {
+		exp := t.CreatedAt.Add(ttl)
+		t.ExpiresAt = &exp
 	}
 	ts = append(ts, t)
 	if err := s.save(ts); err != nil {
@@ -155,6 +171,9 @@ func (s *Store) Authenticate(value string) (string, error) {
 		// Comparing hashes, not values: the time taken says nothing useful
 		// about the secret.
 		if t.Hash == h {
+			if t.Expired(time.Now()) {
+				return "", nil
+			}
 			return t.Principal, nil
 		}
 	}

@@ -6,6 +6,8 @@ package server
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +29,10 @@ type Config struct {
 	MaxRunsPerNamespace int `yaml:"max_runs_per_namespace"`
 	// DefaultRunTimeout stops runs whose agent sets no timeout (default 1h).
 	DefaultRunTimeout string `yaml:"default_run_timeout"`
+	// UpstreamProxy is the HTTP proxy nsctl itself uses to reach the
+	// internet: "" (connect directly), "env" (HTTPS_PROXY / NO_PROXY of the
+	// nsctl process) or a URL like http://proxy.example:3128.
+	UpstreamProxy string `yaml:"upstream_proxy"`
 	// MaxLogBytes caps each run's output log (default 10 MiB).
 	MaxLogBytes int64 `yaml:"max_log_bytes"`
 
@@ -107,10 +113,31 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("default_run_timeout %q must be a positive duration", c.DefaultRunTimeout))
 	}
 	c.runTimeout = d
+	if c.UpstreamProxy != "" && c.UpstreamProxy != "env" {
+		u, err := url.Parse(c.UpstreamProxy)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("upstream_proxy %q must be \"env\" or an http(s):// URL", c.UpstreamProxy))
+		}
+	}
 	if c.MaxLogBytes < 1024 {
 		errs = append(errs, errors.New("max_log_bytes must be at least 1024"))
 	}
 	return errors.Join(errs...)
+}
+
+// upstreamFunc returns the proxy selector for UpstreamProxy, or nil.
+func (c *Config) upstreamFunc() func(*http.Request) (*url.URL, error) {
+	switch c.UpstreamProxy {
+	case "":
+		return nil
+	case "env":
+		return http.ProxyFromEnvironment
+	}
+	u, err := url.Parse(c.UpstreamProxy)
+	if err != nil {
+		return nil
+	}
+	return http.ProxyURL(u)
 }
 
 // PrivateDir holds tokens, sockets, logs and audit logs. It is hidden from

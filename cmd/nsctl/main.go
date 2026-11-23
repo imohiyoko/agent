@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/imohiyoko/agent/internal/auth"
 	"github.com/imohiyoko/agent/internal/sandbox"
@@ -27,8 +28,9 @@ const usage = `nsctl: namespaces for agents
 
 Server side (run by a person):
   nsctl validate [-config nsctl.yaml]          check every namespace declaration
+  nsctl doctor   [-config nsctl.yaml]          check the machine, files, secrets and commands
   nsctl serve    [-config nsctl.yaml] [-listen addr] [-allow-remote]
-  nsctl token create <principal> [-note text] [-config ...]
+  nsctl token create <principal> [-note text] [-ttl 2160h] [-config ...]   -ttl 0: never expires
   nsctl token list   [-config ...]
   nsctl token revoke <id> [-config ...]
 
@@ -58,6 +60,15 @@ func main() {
 		err = validate(args)
 	case "serve":
 		err = serve(args)
+	case "doctor":
+		c, _, cerr := loadConfig(flag.NewFlagSet("doctor", flag.ExitOnError), args)
+		if cerr != nil {
+			err = cerr
+			break
+		}
+		if n := server.Doctor(c, os.Stdout); n > 0 {
+			err = fmt.Errorf("%d problem(s)", n)
+		}
 	case "token":
 		err = token(args)
 	case "sandbox-init":
@@ -164,6 +175,7 @@ func token(args []string) error {
 	sub, args := args[0], args[1:]
 	fs := flag.NewFlagSet("token "+sub, flag.ExitOnError)
 	note := fs.String("note", "", "what the token is for")
+	ttl := fs.Duration("ttl", 90*24*time.Hour, "how long the token is valid (0 = no expiry)")
 	// Allow the positional argument before the flags.
 	var pos []string
 	for len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -180,11 +192,15 @@ func token(args []string) error {
 		if len(pos) != 1 {
 			return fmt.Errorf("token create <principal>")
 		}
-		t, value, err := st.Create(pos[0], *note)
+		t, value, err := st.CreateTTL(pos[0], *note, *ttl)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "token %s for %s (shown once; store it now)\n", t.ID, t.Principal)
+		exp := "never expires"
+		if t.ExpiresAt != nil {
+			exp = "expires " + t.ExpiresAt.Format(time.RFC3339)
+		}
+		fmt.Fprintf(os.Stderr, "token %s for %s, %s (shown once; store it now)\n", t.ID, t.Principal, exp)
 		fmt.Println(value)
 	case "list":
 		ts, err := st.List()
@@ -192,9 +208,17 @@ func token(args []string) error {
 			return err
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tPRINCIPAL\tCREATED\tNOTE")
+		fmt.Fprintln(tw, "ID\tPRINCIPAL\tCREATED\tEXPIRES\tNOTE")
+		now := time.Now()
 		for _, t := range ts {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", t.ID, t.Principal, t.CreatedAt.Format("2006-01-02 15:04"), t.Note)
+			exp := "-"
+			if t.ExpiresAt != nil {
+				exp = t.ExpiresAt.Format("2006-01-02 15:04")
+				if t.Expired(now) {
+					exp += " (expired)"
+				}
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.Principal, t.CreatedAt.Format("2006-01-02 15:04"), exp, t.Note)
 		}
 		return tw.Flush()
 	case "revoke":
