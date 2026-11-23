@@ -33,6 +33,7 @@ filesystem:
 agents:
   - name: claude
     command: ["claude", "-p", "{prompt}"]
+    interactive: ["claude"]                  # nsctl shell 用
     workdir: ~/work/personal
     home: ~/agents/personal
     timeout: 30m
@@ -41,3 +42,4 @@ agents:
       # 置き換え用の値。本物のトークンは proxy が付ける。ANTHROPIC_API_KEY は置かない
       CLAUDE_CODE_OAUTH_TOKEN: placeholder-replaced-by-proxy
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_AUTOUPDATER: "1"

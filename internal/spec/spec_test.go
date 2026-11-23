@@ -76,6 +76,7 @@ func TestValidateRejects(t *testing.T) {
 		"bad timeout":           {func(n *Namespace) { n.Agents[0].Timeout = "soon" }, "timeout"},
 		"agent env holds a key": {func(n *Namespace) { n.Agents[0].Env = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x"} }, "looks like a real key"},
 		"mcp env holds a key":   {func(n *Namespace) { n.MCP.Servers[0].Env["GH"] = EnvVal{Value: "ghp_x"} }, "looks like a real key"},
+		"prompt in interactive": {func(n *Namespace) { n.Agents[0].Interactive = []string{"claude", "{prompt}"} }, "interactive must not use"},
 		"negative timeout":      {func(n *Namespace) { n.Agents[0].Timeout = "-1m" }, "timeout"},
 	}
 	for name, c := range cases {

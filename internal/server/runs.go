@@ -30,11 +30,18 @@ const (
 	StateLost = "lost"
 )
 
+// Run modes.
+const (
+	ModePrompt      = "prompt"      // nsctl run / the API: one prompt, output logged
+	ModeInteractive = "interactive" // nsctl shell: a person's terminal, not logged
+)
+
 // Run is one agent run, as the API shows it.
 type Run struct {
 	ID        string     `json:"id"`
 	Namespace string     `json:"namespace"`
 	Agent     string     `json:"agent"`
+	Mode      string     `json:"mode"` // ModePrompt or ModeInteractive
 	Principal string     `json:"principal"`
 	State     string     `json:"state"`
 	ExitCode  *int       `json:"exit_code,omitempty"`
@@ -95,6 +102,9 @@ func (r *runs) load() error {
 		if json.Unmarshal(b, &x) != nil || x.ID != e.Name() {
 			continue
 		}
+		if x.Mode == "" { // saved before modes existed
+			x.Mode = ModePrompt
+		}
 		x.logPath = filepath.Join(root, x.ID, "output.log")
 		x.done = make(chan struct{})
 		close(x.done)
@@ -121,20 +131,37 @@ func (r *runs) timeout(a *spec.Agent) time.Duration {
 	return d
 }
 
-func (r *runs) start(ns *spec.Namespace, agentName, prompt, principal string) (*Run, error) {
+// ErrNoInteractive is returned by nsctl shell for an agent without an
+// interactive command.
+var ErrNoInteractive = errors.New("this agent has no interactive command (set agents[].interactive)")
+
+// start starts an agent. Prompt runs log their output and stop at the
+// timeout. Interactive runs use the person's terminal, are not logged and
+// have no timeout: they end when the agent exits, the terminal goes away or
+// someone stops them.
+func (r *runs) start(ns *spec.Namespace, agentName, principal string, l launch) (*Run, error) {
 	rt := r.s.runtime(ns.Name)
 	a := ns.Agent(agentName)
 	if rt == nil || a == nil {
 		return nil, ErrNotFound
 	}
+	interactive := l.Terminal != nil
+	if interactive && len(a.Interactive) == 0 {
+		return nil, ErrNoInteractive
+	}
 	idb := make([]byte, 8)
 	_, _ = rand.Read(idb)
 	now := time.Now().UTC()
-	limit := r.timeout(a)
-	deadline := now.Add(limit)
 	run := &Run{
 		ID: hex.EncodeToString(idb), Namespace: ns.Name, Agent: a.Name, Principal: principal,
-		State: StateRunning, StartedAt: now, Deadline: &deadline, done: make(chan struct{}),
+		Mode: ModePrompt, State: StateRunning, StartedAt: now, done: make(chan struct{}),
+	}
+	limit := r.timeout(a)
+	if interactive {
+		run.Mode = ModeInteractive
+	} else {
+		deadline := now.Add(limit)
+		run.Deadline = &deadline
 	}
 
 	// Count and reserve under one lock so two requests cannot both take the
@@ -168,14 +195,23 @@ func (r *runs) start(ns *spec.Namespace, agentName, prompt, principal string) (*
 	if err != nil {
 		return fail(err)
 	}
-	out := &capped{f: f, left: r.s.cfg.MaxLogBytes}
-	cmd, err := r.s.agentCommand(rt, ns, a, prompt, run.ID)
+	cmd, err := r.s.agentCommand(rt, ns, a, l, run.ID)
 	if err != nil {
 		f.Close()
 		return fail(err)
 	}
-	cmd.Stdout, cmd.Stderr = out, out
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if interactive {
+		// The output goes to the person's terminal only.
+		fmt.Fprintf(f, "nsctl: interactive session in a terminal; its output is not recorded\n")
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = l.Terminal.Stdin, l.Terminal.Stdout, l.Terminal.Stderr
+		// A session of its own, so the terminal's job control and the nsctl
+		// process's own terminal (if any) do not get mixed up.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	} else {
+		out := &capped{f: f, left: r.s.cfg.MaxLogBytes}
+		cmd.Stdout, cmd.Stderr = out, out
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
 	if err := cmd.Start(); err != nil {
 		f.Close()
 		return fail(fmt.Errorf("start: %w", err))
@@ -184,12 +220,17 @@ func (r *runs) start(ns *spec.Namespace, agentName, prompt, principal string) (*
 	run.cmd = cmd
 	r.save(run)
 	r.mu.Unlock()
-	r.s.log.Write(audit.Event{Namespace: ns.Name, Kind: "run", Principal: principal, Action: "start", Target: a.Name + "/" + run.ID, Allowed: true})
+	r.s.log.Write(audit.Event{Namespace: ns.Name, Kind: "run", Principal: principal, Action: "start", Target: a.Name + "/" + run.ID, Allowed: true, Reason: run.Mode})
 
-	timer := time.AfterFunc(limit, func() { r.end(run, "timeout") })
+	var timer *time.Timer // nil for interactive runs: no timeout
+	if !interactive {
+		timer = time.AfterFunc(limit, func() { r.end(run, "timeout") })
+	}
 	go func() {
 		err := cmd.Wait()
-		timer.Stop()
+		if timer != nil {
+			timer.Stop()
+		}
 		f.Close()
 		now := time.Now().UTC()
 		r.mu.Lock()

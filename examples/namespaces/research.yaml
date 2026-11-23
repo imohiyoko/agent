@@ -65,6 +65,7 @@ mcp:
 agents:
   - name: claude
     command: ["claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config"]
+    interactive: ["claude", "--mcp-config", "{mcp_config}", "--strict-mcp-config"]
     workdir: ~/work/research
     home: ~/agents/research
     timeout: 30m
@@ -72,3 +73,4 @@ agents:
       ANTHROPIC_BASE_URL: http://anthropic.creds.internal
       ANTHROPIC_API_KEY: placeholder-replaced-by-proxy
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_AUTOUPDATER: "1"

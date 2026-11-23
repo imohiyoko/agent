@@ -72,6 +72,13 @@ nsctl audit <namespace>                    # admin だけ
 - 外の機械から API を使うときは、手前に TLS(リバースプロキシや Tailscale)を置き、`-allow-remote` を付ける。TLS なしで外に開かない。
 - Linux は `bwrap` が要る。macOS は `sandbox-exec`(OS に入っている)。どちらも無いときは起動に失敗する。失敗を避けるためにサンドボックスを外す変更をしない。
 
+## 対話の実行(nsctl shell)
+
+- 人が自分の端末(cmux のペインなど)で `nsctl shell <namespace> [agent]` を打つ。`nsctl serve` と同じ機械・同じ OS の利用者でだけ使える。agent が人の代わりに開くものではない。
+- 対話の実行は `nsctl runs` に `mode: interactive`、主体 `local` で出る。出力は記録されないので、`nsctl logs` には案内の 1 行しか無い。
+- 止めるときは、端末を閉じるか `nsctl stop <namespace> <run-id>`。時間の上限は無い。
+- 手順と最初の 1 回の準備は [docs/claude-code.md](../../../docs/claude-code.md) の「対話で使う」、cmux との組み合わせは [docs/cmux.md](../../../docs/cmux.md)。
+
 ## 監査ログを読む
 
 - `nsctl audit <namespace>` で、通信・認証情報・MCP・API の判定が見られる。

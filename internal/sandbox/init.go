@@ -39,8 +39,11 @@ func Init(forwards []string, command []string) int {
 		fmt.Fprintf(os.Stderr, "nsctl sandbox-init: %v\n", err)
 		return 127
 	}
+	if isTerminal(os.Stdin) {
+		go watchSize(os.Stdin, cmd.Process)
+	}
 	sigs := make(chan os.Signal, 4)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGWINCH)
 	go func() {
 		for s := range sigs {
 			_ = cmd.Process.Signal(s)

@@ -142,6 +142,11 @@ func (s *Server) Run(ctx context.Context, apiListener net.Listener) error {
 		}
 	}
 	go func() { errc <- s.serveAPI(ctx, apiListener) }()
+	go func() {
+		if err := s.serveControl(ctx); err != nil {
+			errc <- err
+		}
+	}()
 	select {
 	case <-ctx.Done():
 		s.runs.stopAll()
@@ -319,12 +324,13 @@ func (s *Server) current(name string) (*nsRuntime, *spec.Namespace) {
 
 // baseEnv is the only environment a sandboxed process gets from nsctl. The
 // nsctl process environment is never passed through: it may hold secrets.
-func baseEnv(home string, ep sandbox.Endpoints, ns string) []string {
+// term is the TERM value ("dumb" when there is no terminal).
+func baseEnv(home string, ep sandbox.Endpoints, ns, term string) []string {
 	env := []string{
 		"HOME=" + home,
 		"PATH=" + os.Getenv("PATH"),
 		"LANG=" + getenvDefault("LANG", "C.UTF-8"),
-		"TERM=dumb",
+		"TERM=" + term,
 		"TMPDIR=/tmp",
 		"NSCTL_NAMESPACE=" + ns,
 	}
@@ -371,7 +377,7 @@ func (s *Server) mcpCommand(rt *nsRuntime, srv *spec.MCPServer) (*exec.Cmd, erro
 	sp.Command = srv.Command
 	sp.Workdir = "/tmp"
 	ep := sp.Plan(s.goos)
-	env := baseEnv(s.cfg.Home, ep, ns.Name)
+	env := baseEnv(s.cfg.Home, ep, ns.Name, "dumb")
 	keys := make([]string, 0, len(srv.Env))
 	for k := range srv.Env {
 		keys = append(keys, k)
@@ -397,8 +403,37 @@ func (s *Server) mcpCommand(rt *nsRuntime, srv *spec.MCPServer) (*exec.Cmd, erro
 	return cmd, nil
 }
 
+// launch says how to start an agent: on one prompt, or in a person's
+// terminal.
+type launch struct {
+	Prompt string
+	// Terminal is set for interactive sessions (nsctl shell): the agent's
+	// stdin, stdout and stderr, and the person's TERM.
+	Terminal *terminal
+}
+
+type terminal struct {
+	Stdin, Stdout, Stderr *os.File
+	Term                  string
+}
+
+// argv is the agent's command line, before {mcp_config} is filled in.
+func (l launch) argv(a *spec.Agent) []string {
+	if l.Terminal != nil {
+		return a.Interactive
+	}
+	out := make([]string, 0, len(a.Command))
+	for _, arg := range a.Command {
+		if arg == spec.PromptPlaceholder {
+			arg = l.Prompt
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
 // agentCommand prepares a sandboxed agent run.
-func (s *Server) agentCommand(rt *nsRuntime, ns *spec.Namespace, a *spec.Agent, prompt, runID string) (*exec.Cmd, error) {
+func (s *Server) agentCommand(rt *nsRuntime, ns *spec.Namespace, a *spec.Agent, l launch, runID string) (*exec.Cmd, error) {
 	sp := s.sandboxSpec(rt, ns, len(ns.MCP.Servers) > 0)
 	sp.Workdir = a.Workdir
 	pubDir := filepath.Join(s.cfg.PublicDir(), runID)
@@ -415,21 +450,26 @@ func (s *Server) agentCommand(rt *nsRuntime, ns *spec.Namespace, a *spec.Agent, 
 	if err := os.WriteFile(mcpPath, cfgJSON, 0o600); err != nil {
 		return nil, err
 	}
-	argv := make([]string, 0, len(a.Command))
-	for _, arg := range a.Command {
-		switch {
-		case arg == spec.PromptPlaceholder:
-			argv = append(argv, prompt)
-		default:
-			argv = append(argv, strings.ReplaceAll(arg, spec.MCPConfigPlaceholder, ep.Files["mcp.json"]))
+	var argv []string
+	for i, arg := range l.argv(a) {
+		// The prompt is used as given; only the declared arguments are
+		// templates.
+		if l.Terminal == nil && a.Command[i] == spec.PromptPlaceholder {
+			argv = append(argv, arg)
+			continue
 		}
+		argv = append(argv, strings.ReplaceAll(arg, spec.MCPConfigPlaceholder, ep.Files["mcp.json"]))
 	}
 	sp.Command = argv
 	home := s.cfg.Home
 	if a.Home != "" {
 		home = a.Home
 	}
-	env := baseEnv(home, ep, ns.Name)
+	term := "dumb"
+	if l.Terminal != nil {
+		term = l.Terminal.Term
+	}
+	env := baseEnv(home, ep, ns.Name, term)
 	keys := make([]string, 0, len(a.Env))
 	for k := range a.Env {
 		keys = append(keys, k)
