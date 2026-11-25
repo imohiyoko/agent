@@ -119,10 +119,9 @@
 
 ## 人が決めること
 
-1. 「ハーダー」を herdrOrchestrator(と herdr)と読んだのが合っているか。
-2. agent の主体を namespace の単位にしてよいか。worker ごとの区別が境界として要るなら、worker ごとに namespace を分ける。
-3. tb を MCP server として出し、agent からの報告をすべて gateway 経由にしてよいか(herdrOrchestrator 側の変更が要る)。
-4. nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。やらなければ、orchestrator の権限の絞り込みは取り決めのままになる。
+1. agent の主体を namespace の単位にしてよいか。worker ごとの区別が境界として要るなら、worker ごとに namespace を分ける。
+2. tb を MCP server として出し、agent からの報告をすべて gateway 経由にしてよいか(herdrOrchestrator 側の変更が要る)。
+3. nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。やらなければ、orchestrator の権限の絞り込みは取り決めのままになる。
 
 ## 段階(案)
 
@@ -130,7 +129,7 @@
 2. nsctl: 認証情報の経路の上流に、同じ機械の tb を書けるようにする(要るなら)。
 3. herdrOrchestrator: tb の MCP server(`report`、`task_get`、`task_assign`)と、nsctl の API で worker を起動する部品。
 4. herdr の pane の起動コマンドを `nsctl shell` にする(`herdr-up.sh` のプリセット。workspace ごとに namespace を決める)。中から herdr の socket と SSH agent に届かないことを試験で示す。
-5. nsctl を別の OS ユーザーで動かす(人が決めること 4)。
+5. nsctl を別の OS ユーザーで動かす(人が決めること 3)。
 
 ## 関連
 
