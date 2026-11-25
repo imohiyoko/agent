@@ -44,7 +44,7 @@
 
 - agent は認証を持たない(ADR 0003)。主体は agent の自己申告ではなく、nsctl が付ける。
 - 権限の上限は namespace でつく(通信、鍵、MCP の server と tool、HOME、書き込める場所、members)。今の nsctl と同じ。
-- terminal(= 1 つの実行)ごとの権限は、上限の中から絞ることでつける(決定 6 の MCP の絞り込み)。
+- terminal(= 1 つの実行)ごとの権限は、上限の中から絞ることでつける(決定 6 の MCP のプロファイル)。
 - orchestrator から見た主体は `<namespace>/<実行の id>` にする。gateway が、どの実行の入口から来たかで付ける。agent は変えられない。
   - 決定 6 のために、gateway は実行ごとに入口を分ける。同じ仕組みで実行の id も分かるので、terminal 単位の主体は追加の手間が小さい。
   - 第 1 段は namespace だけでもよい(実行の id が無いときは `<namespace>`)。
@@ -53,18 +53,13 @@
 
 ### 3. agent から orchestrator への道(報告、タスクの取得)
 
-人の言葉(2026-11-25): 「tb を MCP server にするのはなんかなぁ。tb がプロキシするのが正しそうに思う」。案(推奨の A で書く。人の選択を待つ):
+人の言葉(2026-11-25): 「tb を MCP server にするのはなんかなぁ。tb がプロキシするのが正しそうに思う」。tb は MCP server にしない。
 
 - **報告・タスク**: tb は MCP server ではなく、普通の HTTP の API(`report`、`task_get`、`task_assign` など)を持つ。agent は自分の namespace の認証情報の経路(`{creds_url}/tb/...`)で繋ぐ。
   - 経路に付ける認証情報は「namespace ごとの tb のトークン」。agent はトークンを見ない。
   - 経路の `rules` で、namespace ごとに使える API を絞る(例: worker は `report` と `task_get` だけ、conductor は `task_assign` も)。
   - proxy は上流に `<namespace>/<実行の id>` を付けて送る(決定 2)。
-- **MCP の許可の判定(A)**: gateway は `tools/call` のたびに、tb に「この実行にこの tool を許すか」を聞く。tb が判定し、gateway が強制する。
-  - 鍵と MCP の通信は nsctl に残る。tb は中身を中継しない。
-  - tb に繋がらない・答えが無いときは止める(既定は拒否)。
-  - tb が許しても、宣言の上限に無いものは通さない。
-  - 答えは実行ごとに短い間だけ覚えてよい(毎回聞かない)。
-- (B 案: MCP の通信そのものを tb に通す。tb が上流に繋ぐとき鍵を付けるのは nsctl なので、tb に上限の中の鍵の経路を使う権限が要る。tb が乗っ取られると上限の中の鍵が使える。)
+- MCP の許可は tb に聞かない(決定 6。宣言のプロファイルで決まる)。tb は MCP の通信を中継しない。
 - サンドボックスの中から tb の DB とソケットは読めないようにする(`filesystem` の隠す場所に入れる)。
 
 ### 4. orchestrator から agent への道(割り振り)
@@ -88,31 +83,51 @@
   - 実行中に pane ごとに規則を変える口は作らない。
 - herdr の workspace と namespace の対応は、herdr の設定でも nsctl の宣言でもなく、pane の起動コマンド(`nsctl shell <namespace> <agent>`)で決まる。プリセット(`herdr-up.sh`)に書く。
 
-### 6. MCP の接続の許可: 上限は宣言、絞り込みは orchestrator
+### 6. MCP の接続の許可: 上限も terminal ごとの組み合わせも宣言に書き、起動するときに名前で選ぶ
 
-人が選んだ(2026-11-25、「鍵は nsctl、許可は orchestrator」)。もとの提案: 「mcp 認証をオーケストレーターが持つようにして、どの agent? terminal? workspace? namespace に対して個別に一つ一つの mcp への接続許可を出す形がいい」。
+経緯: 2026-11-25 に imohiyoko が「鍵は nsctl、許可は orchestrator」を選んだ。そのあと「tb に作らなくてもいい」となり、許可も宣言に書く形にした。もとの提案: 「mcp 認証をオーケストレーターが持つようにして、どの agent? terminal? workspace? namespace に対して個別に一つ一つの mcp への接続許可を出す形がいい」。
 
-「どの単位に、どの MCP を許すか」は orchestrator が決める。鍵と強制は nsctl に残す。
+人の問い(2026-11-25): 「tb に作らなくてもいいけど、どのターミナルや namespace がどの mcp を使えるかってどうやって管理するのがいいのか?」。
+
+「だれが何を使えるか」はすべて namespace の宣言(リポジトリの YAML)に書く。tb は許可を持たない。起動するとき(tb、herdr のプリセット、人)は名前を選ぶだけ。鍵と強制は nsctl に残す。
+
+```yaml
+mcp:
+  servers:
+    - name: github
+      credential: github-mcp
+      tools: [get_file_contents, list_issues, create_pull_request]   # namespace の上限
+  profiles:                                                          # terminal ごとの組み合わせ
+    read-only: {github: [get_file_contents, list_issues]}
+    pr:        {github: [get_file_contents, create_pull_request]}
+agents:
+  - name: claude
+    mcp_profile: read-only   # 選ばなかったときに使う
+```
 
 | 決めること | だれが | どこで | 強制 |
 |---|---|---|---|
-| その namespace(= workspace)で使えうる MCP の server と tool(上限) | 人 | namespace の宣言。PR で変える | gateway |
+| その namespace(= workspace)で使えうる MCP の server と tool(上限) | 人 | 宣言の `mcp.servers`。PR で変える | gateway |
+| terminal ごとの組み合わせ(プロファイル) | 人 | 宣言の `mcp.profiles`。PR で変える | gateway |
+| その実行(= terminal)でどのプロファイルを使うか | 起動する側(tb、herdr のプリセット、人) | `nsctl shell <ns> <agent> --profile <名前>`、`run.create` の `profile`(足す) | gateway |
 | MCP の鍵の値 | nsctl だけ | 秘密の置き場所(宣言には名前だけ) | proxy、gateway |
-| その実行(= terminal)で使う server と tool(絞り込み) | orchestrator(tb) | `run.create` と `nsctl shell` の引数(足す) | gateway |
 
-- 絞り込みは上限の中でだけできる。上限に無い server・tool を書いた要求は断る(黙って外さない)。
-- 絞り込みを渡さないときは、上限のとおり(今と同じ)。
-- 絞り込みは宣言を変えないので、design.md の性質 6(宣言を変える経路は PR だけ)は崩れない。権限を広げる道は増えない。
+- `nsctl validate` は、プロファイルが上限に無い server・tool を書いていたら断る。
+- 宣言に無いプロファイルの名前で起動したら断る(黙って上限にしない)。
+- プロファイルを選ばず、`mcp_profile` も無いときは、上限のとおり(今と同じ)。
+- 選んだプロファイルは、実行の間は変えられない。
+- 組み合わせもリポジトリにあるので、PR でレビューされ、履歴が残る。design.md の性質 6(宣言を変える経路は PR だけ)のまま。
+- 弱点: その場で新しい組み合わせを作れない。要るときは PR でプロファイルを足す。
 - gateway は実行ごとに入口を分ける(今は namespace ごとに 1 つ。`internal/server/server.go`)。
   - 実行は、入口の URL や鍵ではなく、**どの入口に繋いだか**で見分ける。秘密の値を中に渡さない。同じ namespace の実行は HOME と書き込める場所を共有するので、中に置いた値は別の実行から読めるため。
   - Linux: 入口は実行ごとの unix socket にし、その実行の bwrap にだけ bind する(今の `--bind <socket> <innerDir>/mcp.sock` と同じ形)。socket の実体は nsctl の状態の置き場所にあり、サンドボックスからは隠してある。実行 B のサンドボックスには A の socket が無く、ネットワークの namespace も別なので、B は A の入口に繋げない。
   - macOS: 入口は実行ごとの port にし、その実行の Seatbelt の profile にだけ許す(今は namespace の port を `(allow network-outbound (remote ip "localhost:<port>"))` で許している)。B の profile は A の port を許さないので、B は A の入口に繋げない。
   - どちらも、実行 B から実行 A の入口に繋げないことを試験で示す(段階 3)。
-- 「agent」の単位は使わない。agent の名前は agent の自己申告で、境界にならない。agent ごとに分けたいときは、実行ごとに絞るか、namespace を分ける。
-- orchestrator に鍵を持たせない理由:
+- 「agent」の単位は使わない。agent の名前は agent の自己申告で、境界にならない。agent ごとに分けたいときは、実行ごとにプロファイルを選ぶか、namespace を分ける。
+- orchestrator に鍵も許可も持たせない理由:
   - 鍵を持つ部品が乗っ取られると、全部の MCP の鍵がまとめて漏れる。
   - 許可の判定が orchestrator のアプリの中に入ると、herdrOrchestrator でうまくいかなかった「アプリの中の判定」に戻る。
-  - orchestrator が乗っ取られても、出せる許可は宣言の上限まで。
+  - orchestrator が乗っ取られても、選べるのは宣言にあるプロファイルだけ。
 
 ### 7. 人が見る画面
 
@@ -136,7 +151,7 @@
   - サンドボックスの環境変数は nsctl が作り直し、nsctl 自身の環境は渡さない。だから herdr の pane から `nsctl shell` を開いても、`SSH_AUTH_SOCK` と `HERDR_*` は中に入らない(`internal/server/server.go` の `baseEnv`)。
   - herdrOrchestrator の認証は pane とプロセスの親子で決めていて、同じ OS ユーザーのなりすましを一部許容している(herdrOrchestrator の docs/adr/0007、2026-11-25 に main を読んだ)。
 - **未確認**
-  - tb の API と、MCP の許可を答える口は herdrOrchestrator にまだ無い(作る必要がある)。
+  - tb の API は herdrOrchestrator にまだ無い(作る必要がある)。
   - proxy は loopback への通信を拒否する(ADR 0006)。認証情報の経路の上流を、同じ機械の tb(`http://127.0.0.1:<port>` か unix socket)にできるかは確かめていない。できなければ nsctl に「機械の上の上流」を足す変更が要る(ADR を別に書く)。
   - gateway は今、呼んだのが namespace の中のどの実行かを上流に伝えない。決定 2 のため、gateway が実行の id を付ける印を足す(段階 3)。
   - nsctl のサンドボックスの中から herdr の socket(`herdr.sock`)に繋げないこと。Linux の bwrap は `/` を読み取り専用で見せるが、unix socket への接続は読み取り専用でも通るはず(推測)。herdr の状態の場所を `filesystem` の隠す場所に入れる必要がある。macOS の Seatbelt での扱いも確かめていない。
@@ -155,14 +170,16 @@
 | herdrOrchestrator の中で認証と分離を作り続ける(ADR 0001 の L3・L4) | 部品が増えない | 同じ OS ユーザー・同じネットワークの上の判定なので迂回できる。herdr に pane を分ける機能が無い |
 | nsctl に仕事の管理(タスク、報告)も入れる | 1 つで済む | nsctl の役割が広がり、境界の部品の変更が増える。taskboard を作り直すことになる |
 | MCP の鍵と許可の判定を orchestrator に持たせる | 許可を 1 か所で柔軟に出せる | orchestrator が乗っ取られると全部の鍵が漏れる。判定がアプリの中に戻る |
-| MCP の許可を namespace の宣言だけで決める(今のまま) | 部品が増えない | 実行ごとに絞りたいたびに namespace を足すことになる |
+| gateway が呼び出しのたびに tb に許可を聞く | その場で組み合わせを変えられる | 許可がリポジトリの外(tb)に散る。tb が止まると全部止まる |
+| MCP の通信そのものを tb に通す | tb が中身を見て細かく決められる | tb に上限の中の鍵の経路を使う権限が要る。乗っ取られると鍵が使える |
+| MCP の許可を namespace の宣言の上限だけで決める(今のまま) | 部品が増えない | 実行ごとに絞りたいたびに namespace を足すことになる |
 | orchestrator が agent を直接起動し、起動のときだけ nsctl のサンドボックスを借りる | 今の `tb agent-new` を変えずに済む | proxy・gateway と起動が別のプロセスになり、規則がずれる(ADR 0005 で採らなかった形と同じ) |
 
 ## 人が決めること
 
 1. ~~agent の主体を namespace の単位にしてよいか。~~ **答え**(2026-11-25、imohiyoko): できれば terminal 単位、楽なのは namespace 単位。→ 決定 2 で、上限は namespace、主体と絞り込みは実行(terminal)単位にした。第 1 段は namespace だけでよい。
-2. ~~tb を MCP server として出すか。~~ **答え**(2026-11-25、imohiyoko): MCP server にはしない。tb がプロキシする形がよい。→ 決定 3 の A(判定だけ tb に聞く)か B(通信を tb に通す)かを人が選ぶ。
-3. ~~MCP の鍵は nsctl、許可(上限の中での絞り込み)は orchestrator、の分け方でよいか(決定 6)。~~ **決まった**: 2026-11-25 に imohiyoko が「鍵は nsctl、許可は orchestrator」を選んだ。
+2. ~~tb を MCP server として出すか。~~ **答え**(2026-11-25、imohiyoko): MCP server にはしない。tb がプロキシする形がよい。→ tb は普通の API だけを持つ(決定 3)。MCP の許可は宣言のプロファイルで決める(決定 6)。
+3. ~~MCP の鍵と許可をどこに置くか(決定 6)。~~ **決まった**: 鍵は nsctl。許可は宣言のプロファイルに書き、起動する側が名前で選ぶ(2026-11-25、imohiyoko の選択と問いから)。
 4. ~~nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。~~ **答え**(2026-11-25、imohiyoko): やる。orchestrator の権限の絞り込みを強制にするため。
    - 影響: nsctl を別の OS ユーザーにすると、pane の `nsctl shell` は control socket(`0600`、ADR 0005 の 2)に繋げなくなる。段階 6 の前に「pane から別ユーザーの nsctl に繋ぐ方法」を ADR で決める。方法は人が選ぶ。
 
@@ -170,8 +187,8 @@
 
 1. この ADR(役割の分け方)。
 2. nsctl: 認証情報の経路の上流に、同じ機械の tb を書けるようにする(要るなら)。
-3. nsctl: `run.create` と `nsctl shell` に MCP の絞り込みを足し、gateway が実行ごとに止める。上流(tb)には `<namespace>/<実行の id>` を付けて送る。
-4. herdrOrchestrator: tb の API(`report`、`task_get`、`task_assign`)と MCP の許可を答える口、nsctl の API で worker を起動する部品。nsctl 側は gateway が tb に聞く処理。
+3. nsctl: 宣言に `mcp.profiles` と `agents[].mcp_profile` を足し、`run.create` と `nsctl shell` でプロファイルを選べるようにする。gateway が実行ごとに止める。上流(tb)には `<namespace>/<実行の id>` を付けて送る。
+4. herdrOrchestrator: tb の API(`report`、`task_get`、`task_assign`)と、nsctl の API でプロファイルを選んで worker を起動する部品。
 5. tb が API で起動した worker(`nsctl run`)は対話ではないので、pane では `nsctl logs <namespace> <id> -f`(ADR 0003 のログの API)で出力を見る。人が話しかける pane は、起動コマンドを `nsctl shell` にする(`herdr-up.sh` のプリセット。workspace ごとに namespace を決める)。中から herdr の socket と SSH agent に届かないことを試験で示す。
 6. nsctl を別の OS ユーザーで動かす(人が決めること 4)。
 
