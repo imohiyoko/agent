@@ -53,6 +53,8 @@
 
 ### 3. agent から orchestrator への道(報告、タスクの取得)
 
+> [ADR 0008](0008-orchestrator-as-nsctl-api-client-and-run-events.md) で置き換える案がある(tb の API を作らず、orchestrator は nsctl の API の客にする)。
+
 人の言葉(2026-11-25): 「tb を MCP server にするのはなんかなぁ。tb がプロキシするのが正しそうに思う」。tb は MCP server にしない。
 
 - **報告・タスク**: tb は MCP server ではなく、普通の HTTP の API(`report`、`task_get`、`task_assign` など)を持つ。agent は自分の namespace の認証情報の経路(`{creds_url}/tb/...`)で繋ぐ。
