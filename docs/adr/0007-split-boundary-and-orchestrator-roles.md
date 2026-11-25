@@ -1,0 +1,141 @@
+# ADR 0007: 境界(認証・通信・認証情報・起動)は nsctl、仕事の割り振りは orchestrator、画面は herdr に分ける
+
+- 状態: Proposed(役割の分け方は人の提案。下の「人が決めること」の答えを待って Accepted にする)
+- 日付: 2026-11-25
+- きっかけ(人の言葉、2026-11-25)
+  - 「ハーダーでは agent 認証とネットワーク分離がうまくいってなかった。こっちではどこまでできる?」
+  - 「ハーダーの役割とおーけすとれーたーの役割で分離するべきな気がしてきた」
+  - 「ハーダー」は herdr(herdrdev/herdr)のこと(人の訂正、2026-11-25)。
+  - 「herdr にその機能はないと思うから新規に作る必要はありそう」「terminal 単位、workspace 単位で分離したいよね」(2026-11-25)
+
+## 要旨
+
+- **困りごと**: herdrOrchestrator は、仕事の割り振り(tb、conductor、Web UI、scheduler)と、agent の認証・制限を 1 つのアプリでやろうとした。
+  - 認証は「呼び出し元がどの pane の中か」で決めていた。agent と人と tb が同じ OS ユーザーなので、わざとのなりすましは止めきれない(herdrOrchestrator ADR 0007 の段 1 で「一部許容」とした)。
+  - ネットワークの分離(同 ADR 0001 の L4)は手を付けられなかった。herdr には pane を分ける機能が無い。
+- **決定**: 3 つの役割に分け、互いの仕事をしない。
+  - **nsctl(このリポジトリ)= 境界**: agent の起動、サンドボックス、通信の制限、認証情報、MCP の tool の制限、API を呼ぶ主体の認証と認可。
+  - **orchestrator(herdrOrchestrator の tb・conductor・Web UI・scheduler)= 仕事**: タスク、報告、割り振り、承認の流れ、定期の実行。agent を動かすときは nsctl に頼む。自分では agent を起動しない。
+  - **herdr = 画面**: 人が agent を見て話す端末。pane の中で `nsctl shell` を動かすだけ。認証には使わない。
+- orchestrator は、agent が使う認証情報(GitHub、API の鍵)を持たない。nsctl の API のトークンを、割り振り先の namespace の operator として持つだけにする。
+
+## 決定
+
+### 1. 役割の表
+
+| 仕事 | nsctl | orchestrator | herdr |
+|---|---|---|---|
+| agent をサンドボックスに入れて起動・停止する | ○ | 頼むだけ(API の `run.create` / `run.stop`) | |
+| 通信の宛先の制限 | ○ | | |
+| 認証情報(鍵・トークン)を持ち、通信に付ける | ○ | | |
+| MCP の server と tool の制限 | ○ | | |
+| API を呼ぶ人・仕組みの認証、namespace ごとの役割 | ○ | | |
+| 宣言(namespace、通信の規則)を変える | PR だけ(design.md の性質 6) | | |
+| タスク、報告、割り振り、承認、定期の実行 | | ○ | |
+| 「どの agent に何をさせてよいか」の仕事の上の判定(tb の policy) | | ○(nsctl の境界の内側でだけ効く) | |
+| 人が agent を見て話す | | | ○(pane で `nsctl shell`) |
+
+- 仕事の上の判定(tb の policy)は残してよい。ただし「破られても境界は守られる」ものとして扱う。境界は nsctl だけが持つ。
+- 「違う権限が要る agent は、別の namespace に入れる」(ADR 0001 の 1)をそのまま使う。tb の役割(manager、worker、reviewer など)ごとに権限を分けたいときは、namespace を分ける。
+
+### 2. agent の主体は namespace にする
+
+- agent は認証を持たない(ADR 0003)。orchestrator から見た agent の主体は「どの namespace から来たか」だけにする。
+- これは nsctl が強制できる。agent は自分の namespace の proxy と gateway にしか届かない(ADR 0002、0004)。
+- pane、環境変数、プロセスの親子による主体の判定(herdrOrchestrator ADR 0007 の段 1)は、境界としては使わない。
+
+### 3. agent から orchestrator への道(報告、タスクの取得)
+
+- agent は、自分の namespace の MCP gateway を通して、tb の tool を呼ぶ。tb はサンドボックスの外(人の機械の上)で、MCP server として待つ。
+- 宣言では、リモートの MCP server(ADR 0004 の 4)として書く。tb への経路は gateway だけが使える経路にする。
+- 経路に付ける認証情報は「namespace ごとの tb のトークン」にする。tb はトークンで「どの namespace からか」を知る。agent はトークンを見ない。
+- 見せる tool は namespace ごとに絞る(例: worker は `report` と `task_get` だけ、conductor は `task_assign` も)。
+- サンドボックスの中から tb の DB とソケットは読めないようにする(`filesystem` の隠す場所に入れる)。
+
+### 4. orchestrator から agent への道(割り振り)
+
+- conductor は LLM の agent なので、それ自体も 1 つの namespace(例 `conductor`)で動かす。conductor が nsctl のトークンを持つことはない。
+- conductor が「worker にこれをさせる」と決めたら、tb の tool を呼ぶ。tb(決まった処理だけをする部品)が、自分の policy を確かめてから nsctl の API に `run.create` を送る。
+- tb が持つ nsctl のトークンは、割り振り先の namespace の `operator` だけにする。admin にはしない。監査ログ(`audit.read`)が要るなら、別のトークンを viewer + 人の判断で足す。
+- 宣言に書いた agent しか動かせない(ADR 0003)ので、tb が乗っ取られても、任意のコマンドは動かない。
+
+### 5. 分ける単位: herdr の workspace と terminal(pane)
+
+人の言葉「terminal 単位、workspace 単位で分離したい」を、次のように nsctl の単位に当てる。
+
+| herdr の単位 | nsctl の単位 | 分かれるもの |
+|---|---|---|
+| workspace | namespace | 通信の規則、認証情報、MCP の tool、操作できる人(members) |
+| terminal(pane) | 1 つの実行(`nsctl shell` / `nsctl run`) | サンドボックス(プロセス、書き込める場所、HOME)。実行ごとに別の箱 |
+
+- 同じ workspace の中で、pane ごとに違う通信の規則や鍵が要るときは、その pane を別の namespace にする。
+  - namespace は宣言なので、PR で足す(design.md の性質 6)。
+  - 実行中に pane ごとに規則を変える口は作らない。
+- herdr の workspace と namespace の対応は、herdr の設定でも nsctl の宣言でもなく、pane の起動コマンド(`nsctl shell <namespace> <agent>`)で決まる。プリセット(`herdr-up.sh`)に書く。
+
+### 6. 人が見る画面
+
+- herdr の pane では `nsctl shell <namespace> <agent>` を動かす。通信・認証情報・tool の規則は `nsctl run` と同じ(ADR 0005)。
+- herdr と cmux の扱いは同じにする。どちらも画面と通知だけを受け持つ。
+
+## 確認の状態(2026-11-25)
+
+- **確認済み**(herdr のソース。herdrdev/herdr の main、0.9.5、commit e8d7d97、2026-11-25 に読んだ)
+  - サンドボックス、通信の制限、proxy、認証情報の注入にあたるコードは無い(`src/` と `crates/` を sandbox・landlock・seatbelt・egress・proxy などで検索して 0 件)。
+  - pane は herdr の server と同じ OS ユーザーで動く。pane ごとにユーザーや権限を分ける設定は無い。
+  - API の socket(`herdr.sock`)は `0600`。同じ OS ユーザーのプロセスなら誰でも繋げる。`SO_PEERCRED` は呼び出し元の pid を知るのに使うだけで、認可には使っていない(`src/api/server.rs`、`src/platform/linux.rs`)。だから pane の中の agent は、API で pane を作り、ほかの agent に打ち込める(README の「agents drive herdr through the cli and socket api」)。
+  - 新しい pane には、herdr の server の SSH agent の socket が `SSH_AUTH_SOCK` で渡る(`src/platform/ssh_agent.rs` の `apply_pane_env`)。pane の agent は人の SSH の鍵を使える。
+  - plugin は OS ユーザー全体で共通(CHANGELOG 0.7.x の項)。
+  - 結論: 人の推測どおり、herdr には agent の認証もネットワークの分離も無い。新しく作る必要がある。その部品が nsctl。
+- **確認済み**(このリポジトリのソースと既存の ADR の試験)
+  - agent は自分の namespace の proxy と gateway のほかへ通信できない(ADR 0002、0006 の試験)。
+  - 認証情報の値は agent に渡らず、proxy が付ける(ADR 0002)。
+  - 経路を gateway だけに使わせられ、agent が直接呼ぶと 403 になる(ADR 0004 の 4。`internal/mcpgw/remote.go` の `X-Nsctl-Gateway`)。
+  - API は宣言の agent しか動かさず、役割は namespace ごと(ADR 0003)。
+  - サンドボックスの環境変数は nsctl が作り直し、nsctl 自身の環境は渡さない。だから herdr の pane から `nsctl shell` を開いても、`SSH_AUTH_SOCK` と `HERDR_*` は中に入らない(`internal/server/server.go` の `baseEnv`)。
+  - herdrOrchestrator の認証は pane とプロセスの親子で決めていて、同じ OS ユーザーのなりすましを一部許容している(herdrOrchestrator の docs/adr/0007、2026-11-25 に main を読んだ)。
+- **未確認**
+  - tb を MCP server として出す口は herdrOrchestrator にまだ無い(作る必要がある)。
+  - proxy は loopback への通信を拒否する(ADR 0006)。認証情報の経路の上流を、同じ機械の tb(`http://127.0.0.1:<port>` か unix socket)にできるかは確かめていない。できなければ nsctl に「機械の上の上流」を足す変更が要る(ADR を別に書く)。
+  - gateway は呼んだのが namespace の中のどの実行かを上流に伝えない。tb が実行の単位(run の id)まで知りたいなら、gateway が付ける印を足す必要がある。
+  - nsctl のサンドボックスの中から herdr の socket(`herdr.sock`)に繋げないこと。Linux の bwrap は `/` を読み取り専用で見せるが、unix socket への接続は読み取り専用でも通るはず(推測)。herdr の状態の場所を `filesystem` の隠す場所に入れる必要がある。macOS の Seatbelt での扱いも確かめていない。
+  - SSH agent の socket のファイル自体に、中から繋げないこと。`SSH_AUTH_SOCK` は渡らない(下の確認済み)が、場所を知っていれば繋げるかもしれない。Linux のネットワークの namespace は、ファイルの場所で開く unix socket を分けない。上と同じく隠す場所に入れる。
+- **推測**
+  - 1 つの namespace に worker を何体も入れる運用なら、tb から見て worker の区別は自己申告になる。区別が境界として要るなら、worker ごとに namespace を分けることになる。
+
+## 限界(この決定で守れないこと)
+
+- **同じ OS ユーザーの上の orchestrator**: tb と Web UI が nsctl と同じ OS ユーザーで動くなら、tb は nsctl の状態の置き場所(トークン、秘密のファイル)を読める。`nsctl shell` の control socket も admin と同じに扱われる(ADR 0005 の 2)。だから「orchestrator の権限を operator に絞る」は、nsctl を別の OS ユーザーで動かすまでは、取り決めであって強制ではない。
+- **conductor の判断の誤り**: conductor が間違った割り振りをしても、nsctl は止めない。止められるのは「宣言の範囲を越えること」だけ。
+- **tb の tool を通した持ち出し**: agent が tb の `report` に秘密を書くことは防げない。tb に届くものは、namespace の中で agent が読めたものに限られる。
+
+## 検討した代替案
+
+| 案 | 利点 | 欠点 |
+|---|---|---|
+| herdrOrchestrator の中で認証と分離を作り続ける(ADR 0001 の L3・L4) | 部品が増えない | 同じ OS ユーザー・同じネットワークの上の判定なので迂回できる。herdr に pane を分ける機能が無い |
+| nsctl に仕事の管理(タスク、報告)も入れる | 1 つで済む | nsctl の役割が広がり、境界の部品の変更が増える。taskboard を作り直すことになる |
+| orchestrator が agent を直接起動し、起動のときだけ nsctl のサンドボックスを借りる | 今の `tb agent-new` を変えずに済む | proxy・gateway と起動が別のプロセスになり、規則がずれる(ADR 0005 で採らなかった形と同じ) |
+
+## 人が決めること
+
+1. 「ハーダー」を herdrOrchestrator(と herdr)と読んだのが合っているか。
+2. agent の主体を namespace の単位にしてよいか。worker ごとの区別が境界として要るなら、worker ごとに namespace を分ける。
+3. tb を MCP server として出し、agent からの報告をすべて gateway 経由にしてよいか(herdrOrchestrator 側の変更が要る)。
+4. nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。やらなければ、orchestrator の権限の絞り込みは取り決めのままになる。
+
+## 段階(案)
+
+1. この ADR(役割の分け方)。
+2. nsctl: 認証情報の経路の上流に、同じ機械の tb を書けるようにする(要るなら)。
+3. herdrOrchestrator: tb の MCP server(`report`、`task_get`、`task_assign`)と、nsctl の API で worker を起動する部品。
+4. herdr の pane の起動コマンドを `nsctl shell` にする(`herdr-up.sh` のプリセット。workspace ごとに namespace を決める)。中から herdr の socket と SSH agent に届かないことを試験で示す。
+5. nsctl を別の OS ユーザーで動かす(人が決めること 4)。
+
+## 関連
+
+- ADR 0001(namespace の定義。「herdrOrchestrator との関係」の第 2 段を具体にしたのがこの ADR)
+- ADR 0003(認証は人と仕組みだけ。API)
+- ADR 0004(MCP gateway、gateway だけの経路)
+- ADR 0005(`nsctl shell`、端末の道具との組み合わせ)
+- herdrOrchestrator ADR 0001(制限は環境で強制する)、ADR 0007(主体と policy)
