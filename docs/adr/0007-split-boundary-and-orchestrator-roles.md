@@ -155,8 +155,8 @@
 1. ~~agent の主体を namespace の単位にしてよいか。~~ **答え**(2026-11-25、imohiyoko): できれば terminal 単位、楽なのは namespace 単位。→ 決定 2 で、上限は namespace、主体と絞り込みは実行(terminal)単位にした。第 1 段は namespace だけでよい。
 2. tb を MCP server として出し、agent からの報告をすべて gateway 経由にしてよいか(herdrOrchestrator 側の変更が要る)。
 3. ~~MCP の鍵は nsctl、許可(上限の中での絞り込み)は orchestrator、の分け方でよいか(決定 6)。~~ **決まった**: 2026-11-25 に imohiyoko が「鍵は nsctl、許可は orchestrator」を選んだ。
-4. nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。やらなければ、orchestrator の権限の絞り込みは取り決めのままになる。
-   - 影響: nsctl を別の OS ユーザーにすると、pane の `nsctl shell` は control socket(`0600`、ADR 0005 の 2)に繋げなくなる。やるなら、その前に「pane から別ユーザーの nsctl に繋ぐ方法」を ADR で決める。方法は人が選ぶ。
+4. ~~nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。~~ **答え**(2026-11-25、imohiyoko): やる。orchestrator の権限の絞り込みを強制にするため。
+   - 影響: nsctl を別の OS ユーザーにすると、pane の `nsctl shell` は control socket(`0600`、ADR 0005 の 2)に繋げなくなる。段階 6 の前に「pane から別ユーザーの nsctl に繋ぐ方法」を ADR で決める。方法は人が選ぶ。
 
 ## 段階(案)
 
