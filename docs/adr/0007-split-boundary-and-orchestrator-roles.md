@@ -56,7 +56,7 @@
 
 - conductor は LLM の agent なので、それ自体も 1 つの namespace(例 `conductor`)で動かす。conductor が nsctl のトークンを持つことはない。
 - conductor が「worker にこれをさせる」と決めたら、tb の tool を呼ぶ。tb(決まった処理だけをする部品)が、自分の policy を確かめてから nsctl の API に `run.create` を送る。
-- tb が持つ nsctl のトークンは、割り振り先の namespace の `operator` だけにする。admin にはしない。監査ログ(`audit.read`)が要るなら、別のトークンを viewer + 人の判断で足す。
+- tb が持つ nsctl のトークンは、割り振り先の namespace の `operator` だけにする。admin にはしない。監査ログ(`audit.read`)は admin だけに許される(ADR 0003)。tb には渡さず、人が admin として読む。
 - 宣言に書いた agent しか動かせない(ADR 0003)ので、tb が乗っ取られても、任意のコマンドは動かない。
 
 ### 5. 分ける単位: herdr の workspace と terminal(pane)
@@ -66,9 +66,9 @@
 | herdr の単位 | nsctl の単位 | 分かれるもの |
 |---|---|---|
 | workspace | namespace | 通信の規則、認証情報、MCP の tool、操作できる人(members) |
-| terminal(pane) | 1 つの実行(`nsctl shell` / `nsctl run`) | サンドボックス(プロセス、書き込める場所、HOME)。実行ごとに別の箱 |
+| terminal(pane) | 1 つの実行(`nsctl shell` / `nsctl run`) | サンドボックス(プロセス)。実行ごとに別の箱。ただし HOME(`agents[].home`)と書き込める場所(`filesystem.writable`)は宣言で決まり、同じ namespace の実行どうしで共有する。一方の実行が書いたファイルは、もう一方から読める |
 
-- 同じ workspace の中で、pane ごとに違う通信の規則や鍵が要るときは、その pane を別の namespace にする。
+- 同じ workspace の中で、pane ごとに違う通信の規則・鍵・HOME・書き込める場所が要るときは、その pane を別の namespace にする。
   - namespace は宣言なので、PR で足す(design.md の性質 6)。
   - 実行中に pane ごとに規則を変える口は作らない。
 - herdr の workspace と namespace の対応は、herdr の設定でも nsctl の宣言でもなく、pane の起動コマンド(`nsctl shell <namespace> <agent>`)で決まる。プリセット(`herdr-up.sh`)に書く。
@@ -147,6 +147,7 @@
 2. tb を MCP server として出し、agent からの報告をすべて gateway 経由にしてよいか(herdrOrchestrator 側の変更が要る)。
 3. ~~MCP の鍵は nsctl、許可(上限の中での絞り込み)は orchestrator、の分け方でよいか(決定 6)。~~ **決まった**: 2026-11-25 に imohiyoko が「鍵は nsctl、許可は orchestrator」を選んだ。
 4. nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。やらなければ、orchestrator の権限の絞り込みは取り決めのままになる。
+   - 影響: nsctl を別の OS ユーザーにすると、pane の `nsctl shell` は control socket(`0600`、ADR 0005 の 2)に繋げなくなる。やるなら、その前に「pane から別ユーザーの nsctl に繋ぐ方法」を ADR で決める。方法は人が選ぶ。
 
 ## 段階(案)
 
@@ -154,7 +155,7 @@
 2. nsctl: 認証情報の経路の上流に、同じ機械の tb を書けるようにする(要るなら)。
 3. nsctl: `run.create` と `nsctl shell` に MCP の絞り込みを足し、gateway が実行ごとに止める。
 4. herdrOrchestrator: tb の MCP server(`report`、`task_get`、`task_assign`)と、nsctl の API で worker を起動する部品。
-5. herdr の pane の起動コマンドを `nsctl shell` にする(`herdr-up.sh` のプリセット。workspace ごとに namespace を決める)。中から herdr の socket と SSH agent に届かないことを試験で示す。
+5. tb が API で起動した worker(`nsctl run`)は対話ではないので、pane では `nsctl logs <namespace> <id> -f`(ADR 0003 のログの API)で出力を見る。人が話しかける pane は、起動コマンドを `nsctl shell` にする(`herdr-up.sh` のプリセット。workspace ごとに namespace を決める)。中から herdr の socket と SSH agent に届かないことを試験で示す。
 6. nsctl を別の OS ユーザーで動かす(人が決めること 4)。
 
 ## 関連
