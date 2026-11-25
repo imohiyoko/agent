@@ -1,6 +1,6 @@
 # ADR 0007: 境界(認証・通信・認証情報・起動)は nsctl、仕事の割り振りは orchestrator、画面は herdr に分ける
 
-- 状態: Accepted(2026-11-25。役割の分け方は人の提案。「人が決めること」の 4 つに人が答えた。最後は MCP のプロファイルの形に「それでいいと思う」)
+- 状態: Accepted(決定 3 と段階 4 の tb の API は ADR 0008 で置き換えた)(2026-11-25。役割の分け方は人の提案。「人が決めること」の 4 つに人が答えた。最後は MCP のプロファイルの形に「それでいいと思う」)
 - 日付: 2026-11-25
 - きっかけ(人の言葉、2026-11-25)
   - 「ハーダーでは agent 認証とネットワーク分離がうまくいってなかった。こっちではどこまでできる?」
@@ -53,7 +53,7 @@
 
 ### 3. agent から orchestrator への道(報告、タスクの取得)
 
-> [ADR 0008](0008-orchestrator-as-nsctl-api-client-and-run-events.md) で置き換える案がある(tb の API を作らず、orchestrator は nsctl の API の客にする)。
+> **この決定は [ADR 0008](0008-orchestrator-as-nsctl-api-client-and-run-events.md) で置き換えた**(2026-11-25)。tb の API は作らず、orchestrator は nsctl の API の客にする。以下は記録として残す。
 
 人の言葉(2026-11-25): 「tb を MCP server にするのはなんかなぁ。tb がプロキシするのが正しそうに思う」。tb は MCP server にしない。
 
