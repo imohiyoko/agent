@@ -53,10 +53,18 @@
 
 ### 3. agent から orchestrator への道(報告、タスクの取得)
 
-- agent は、自分の namespace の MCP gateway を通して、tb の tool を呼ぶ。tb はサンドボックスの外(人の機械の上)で、MCP server として待つ。
-- 宣言では、リモートの MCP server(ADR 0004 の 4)として書く。tb への経路は gateway だけが使える経路にする。
-- 経路に付ける認証情報は「namespace ごとの tb のトークン」にする。tb はトークンで「どの namespace からか」を知る。agent はトークンを見ない。
-- 見せる tool は namespace ごとに絞る(例: worker は `report` と `task_get` だけ、conductor は `task_assign` も)。
+人の言葉(2026-11-25): 「tb を MCP server にするのはなんかなぁ。tb がプロキシするのが正しそうに思う」。案(推奨の A で書く。人の選択を待つ):
+
+- **報告・タスク**: tb は MCP server ではなく、普通の HTTP の API(`report`、`task_get`、`task_assign` など)を持つ。agent は自分の namespace の認証情報の経路(`{creds_url}/tb/...`)で繋ぐ。
+  - 経路に付ける認証情報は「namespace ごとの tb のトークン」。agent はトークンを見ない。
+  - 経路の `rules` で、namespace ごとに使える API を絞る(例: worker は `report` と `task_get` だけ、conductor は `task_assign` も)。
+  - proxy は上流に `<namespace>/<実行の id>` を付けて送る(決定 2)。
+- **MCP の許可の判定(A)**: gateway は `tools/call` のたびに、tb に「この実行にこの tool を許すか」を聞く。tb が判定し、gateway が強制する。
+  - 鍵と MCP の通信は nsctl に残る。tb は中身を中継しない。
+  - tb に繋がらない・答えが無いときは止める(既定は拒否)。
+  - tb が許しても、宣言の上限に無いものは通さない。
+  - 答えは実行ごとに短い間だけ覚えてよい(毎回聞かない)。
+- (B 案: MCP の通信そのものを tb に通す。tb が上流に繋ぐとき鍵を付けるのは nsctl なので、tb に上限の中の鍵の経路を使う権限が要る。tb が乗っ取られると上限の中の鍵が使える。)
 - サンドボックスの中から tb の DB とソケットは読めないようにする(`filesystem` の隠す場所に入れる)。
 
 ### 4. orchestrator から agent への道(割り振り)
@@ -128,7 +136,7 @@
   - サンドボックスの環境変数は nsctl が作り直し、nsctl 自身の環境は渡さない。だから herdr の pane から `nsctl shell` を開いても、`SSH_AUTH_SOCK` と `HERDR_*` は中に入らない(`internal/server/server.go` の `baseEnv`)。
   - herdrOrchestrator の認証は pane とプロセスの親子で決めていて、同じ OS ユーザーのなりすましを一部許容している(herdrOrchestrator の docs/adr/0007、2026-11-25 に main を読んだ)。
 - **未確認**
-  - tb を MCP server として出す口は herdrOrchestrator にまだ無い(作る必要がある)。
+  - tb の API と、MCP の許可を答える口は herdrOrchestrator にまだ無い(作る必要がある)。
   - proxy は loopback への通信を拒否する(ADR 0006)。認証情報の経路の上流を、同じ機械の tb(`http://127.0.0.1:<port>` か unix socket)にできるかは確かめていない。できなければ nsctl に「機械の上の上流」を足す変更が要る(ADR を別に書く)。
   - gateway は今、呼んだのが namespace の中のどの実行かを上流に伝えない。決定 2 のため、gateway が実行の id を付ける印を足す(段階 3)。
   - nsctl のサンドボックスの中から herdr の socket(`herdr.sock`)に繋げないこと。Linux の bwrap は `/` を読み取り専用で見せるが、unix socket への接続は読み取り専用でも通るはず(推測)。herdr の状態の場所を `filesystem` の隠す場所に入れる必要がある。macOS の Seatbelt での扱いも確かめていない。
@@ -153,7 +161,7 @@
 ## 人が決めること
 
 1. ~~agent の主体を namespace の単位にしてよいか。~~ **答え**(2026-11-25、imohiyoko): できれば terminal 単位、楽なのは namespace 単位。→ 決定 2 で、上限は namespace、主体と絞り込みは実行(terminal)単位にした。第 1 段は namespace だけでよい。
-2. tb を MCP server として出し、agent からの報告をすべて gateway 経由にしてよいか(herdrOrchestrator 側の変更が要る)。
+2. ~~tb を MCP server として出すか。~~ **答え**(2026-11-25、imohiyoko): MCP server にはしない。tb がプロキシする形がよい。→ 決定 3 の A(判定だけ tb に聞く)か B(通信を tb に通す)かを人が選ぶ。
 3. ~~MCP の鍵は nsctl、許可(上限の中での絞り込み)は orchestrator、の分け方でよいか(決定 6)。~~ **決まった**: 2026-11-25 に imohiyoko が「鍵は nsctl、許可は orchestrator」を選んだ。
 4. ~~nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。~~ **答え**(2026-11-25、imohiyoko): やる。orchestrator の権限の絞り込みを強制にするため。
    - 影響: nsctl を別の OS ユーザーにすると、pane の `nsctl shell` は control socket(`0600`、ADR 0005 の 2)に繋げなくなる。段階 6 の前に「pane から別ユーザーの nsctl に繋ぐ方法」を ADR で決める。方法は人が選ぶ。
@@ -163,7 +171,7 @@
 1. この ADR(役割の分け方)。
 2. nsctl: 認証情報の経路の上流に、同じ機械の tb を書けるようにする(要るなら)。
 3. nsctl: `run.create` と `nsctl shell` に MCP の絞り込みを足し、gateway が実行ごとに止める。上流(tb)には `<namespace>/<実行の id>` を付けて送る。
-4. herdrOrchestrator: tb の MCP server(`report`、`task_get`、`task_assign`)と、nsctl の API で worker を起動する部品。
+4. herdrOrchestrator: tb の API(`report`、`task_get`、`task_assign`)と MCP の許可を答える口、nsctl の API で worker を起動する部品。nsctl 側は gateway が tb に聞く処理。
 5. tb が API で起動した worker(`nsctl run`)は対話ではないので、pane では `nsctl logs <namespace> <id> -f`(ADR 0003 のログの API)で出力を見る。人が話しかける pane は、起動コマンドを `nsctl shell` にする(`herdr-up.sh` のプリセット。workspace ごとに namespace を決める)。中から herdr の socket と SSH agent に届かないことを試験で示す。
 6. nsctl を別の OS ユーザーで動かす(人が決めること 4)。
 
