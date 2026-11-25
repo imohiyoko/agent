@@ -39,14 +39,20 @@
 - `net` と `mcp` は、ADR 0007 の決定 2(実行ごとの入口)で実行の id が分かるようになる。そのあとで、出来事にも書く。
 - 中身に認証情報の値は書かない(design.md の性質 4)。proxy が付けた値は記録の前に除く。引数に秘密が入ることは防げない(限界を見る)。
 - 大きさに上限を付ける。1 件の大きさ(引数は切り詰める)、1 実行の件数。越えたら「記録をやめた」という出来事を 1 件書く。記録をやめたことは隠さない。
+- 件数の上限は種類ごとに分ける。`exec` などの記録が上限に届いても、許可待ち(決定 3)と `ask`(ADR 0008)は別の枠で必ず書けるようにする。許可待ちの枠も満ちたら、新しい許可待ちはその場で断る(既定は拒否)。
 
 ### 2. exec の取り方
 
 | OS | 方法 | 強さ |
 |---|---|---|
-| Linux | `sandbox-init` が、agent を起動する前に seccomp の filter(`execve`、`execveat` に `SECCOMP_RET_USER_NOTIF`)を自分に掛ける。通知を受ける fd を nsctl に渡し、nsctl が起動のたびに `/proc/<pid>/cmdline` と exe を読んで記録する | 子と孫のすべての起動を取れる。filter は外せない(seccomp の filter は掛けたら外せない)。`sandbox-init` は掛ける前に自分で no_new_privs を立てる |
-| macOS | `nsctl serve` が、agent のプロセスの木を短い間隔で見て、新しいプロセスを記録する | 弱い。すぐ終わるプロセスは見落とす |
+| Linux | `sandbox-init` が、agent を起動する前に seccomp の filter(`execve`、`execveat` に `SECCOMP_RET_USER_NOTIF`)を自分に掛ける。通知を受ける fd を nsctl に渡す。nsctl は、通知の引数(起動するパスと argv の場所)を手がかりに、呼び出したプロセスの記憶(`/proc/<pid>/mem`)から起動先のパスと argv を読んで記録し、すぐに続けさせる(`SECCOMP_USER_NOTIF_FLAG_CONTINUE`) | 子と孫のすべての起動の試みを取れる。filter は外せない(seccomp の filter は掛けたら外せない)。`sandbox-init` は掛ける前に自分で no_new_privs を立てる |
+| macOS | `nsctl serve` が、agent のプロセスの木を短い間隔で見て、新しいプロセスと、同じ pid でプログラムが替わったもの(exe のパスを前回と比べる)を記録する | 弱い。すぐ終わるプロセスは見落とす。同じ pid で `exec` が続くと、間のプログラムを見落とす |
 
+- Linux の記録の限界:
+  - 通知の時点(`execve` の前)の `/proc/<pid>/cmdline` と exe は、呼び出した側(例 bash)のもの。だから引数の場所から読む。
+  - 読むあいだに、同じ記憶を持つ別のスレッドが引数を書き換えられる(seccomp_unotify(2) の TOCTOU)。記録は「起動しようとしたもの」の目安で、証拠としては弱い。
+  - 読めなかったとき(プロセスが先に消えた、記憶が読めない)は、「読めなかった」という出来事を書く。黙って飛ばさない。
+  - 起動が失敗したかどうか(`execve` の戻り値)は分からない。
 - Linux の別案: `ptrace`(`PTRACE_O_TRACEEXEC`)。agent 自身が `ptrace` を使う道具(gdb、strace)を使えなくなるので、第 1 候補にしない。
 - Linux の別案: `fanotify` の `FAN_OPEN_EXEC`。特権が要るので使わない。
 - macOS の別案: Endpoint Security。Apple の許可(entitlement)と root が要るので、今は使わない。
@@ -54,7 +60,9 @@
 ### 3. 前もって止める(危ない操作だけ)
 
 - 前もって止めるのは、nsctl が中身を確かに知っている所だけにする。
-  - `net`: 宣言で「許可を待つ」と書いた宛先(例: `api.github.com` への `POST`)。proxy が止めて待つ。
+  - `net`: 宣言で「許可を待つ」と書いたもの。proxy が止めて待つ。
+    - 認証情報の経路(`{creds_url}/<name>`、`<name>.creds.internal`): proxy が HTTP の中身を見て TLS を付けるので、メソッドとパスの単位で待てる(例: GitHub の経路の `POST`)。
+    - ふつうの HTTPS(`CONNECT`): proxy は中身を見ない(ADR 0002)。宛先(host と port)の単位でしか待てない。メソッドで分けたいときは、その宛先を認証情報の経路にする。
   - `mcp`: 宣言で「許可を待つ」と書いた tool(例: `create_pull_request`)。gateway が止めて待つ。
 - 待っているあいだ、出来事に「許可待ち」を書く。見張り役の agent か人が、API で許すか断る(`POST .../events/{n}/answer`、ADR 0008 と同じ形)。
 - 時間内に答えが無ければ断る(既定は拒否)。
@@ -64,13 +72,20 @@
 - 宣言の書き方(案):
 
 ```yaml
+credentials:
+  - name: github
+    upstream: https://api.github.com
+    secret: coding/github
+    rules:
+      - methods: [GET]
+        paths: ["/repos/**"]
+      - methods: [POST]
+        paths: ["/repos/*/*/pulls"]
+        approve: true    # 許可を待つ(認証情報の経路なのでメソッドで分けられる)
 network:
   allow:
-    - host: api.github.com
-      methods: [GET]
-    - host: api.github.com
-      methods: [POST]
-      approve: true      # 許可を待つ
+    - host: registry.npmjs.org
+      approve: true      # ふつうの HTTPS は宛先の単位でだけ待てる
 mcp:
   servers:
     - name: github
@@ -92,7 +107,7 @@ monitor:
 | `approve` | 許可待ちに答える | 同上 |
 | `notify_human` | 人に知らせる(出来事に「人の判断が要る」を書く) | 同上 |
 
-- 見張り役は、見張る先の通信も、鍵も、ファイルも見ない。出来事だけを読む。
+- 見張り役は、見張る先の通信も、鍵も、ファイルも見ない。出来事だけを読む。ただし exec の引数に書かれた値は出来事に残るので、見張り役も読める(限界を見る)。
 - 見張り役に、nsctl の API のトークンは渡さない。tool は gateway の中で nsctl が答える。
 - 見張り役自身の出来事も記録する。見張り役を見張るのは人(監査ログ)。
 - 見張り役が止まっている・遅れているときも、agent は止めない(非同期の見張りなので)。許可待ちは時間切れで断られる。
@@ -118,7 +133,8 @@ monitor:
 
 ## 限界
 
-- macOS では、すぐ終わるプロセスを見落とす。Linux と同じ強さにはならない。
+- macOS では、すぐ終わるプロセスと、同じ pid で続く `exec` の間のプログラムを見落とす。Linux と同じ強さにはならない。
+- ふつうの HTTPS の宛先は、宛先の単位でしか前もって止められない。
 - 引数に秘密(トークンなど)が書かれると、そのまま記録に入る。記録は nsctl の状態の置き場所に置き、`run.read` の権限で読む。見張り役もそれを読む。
 - 前もって止めるのは、通信と MCP だけ。サンドボックスの中の操作(ファイルの削除など)は、後から知るだけ。被害は、書き込める場所(宣言)の中に限られる。
 - 見張り役の agent が判断を誤ることは防げない。止める・許すの記録は残る。
@@ -135,7 +151,7 @@ monitor:
 ## 人が決めること
 
 1. この形(記録は nsctl、見張り役は別の namespace、前もって止めるのは通信と MCP の危ない操作だけ)でよいか。
-2. macOS の exec の記録が弱いこと(見落としがある)を受け入れるか。
+2. macOS の exec の記録が弱いこと(すぐ終わるプロセスと、同じ pid で続く `exec` を見落とす)を受け入れるか。
 
 ## 関連
 
