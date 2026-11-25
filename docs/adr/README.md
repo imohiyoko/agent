@@ -12,4 +12,4 @@
 | [0004](0004-per-namespace-mcp-gateway.md) | MCP は namespace ごとの gateway を通し、使える server と tool を namespace で切り替える | Accepted |
 | [0005](0005-interactive-sessions-and-terminal-multiplexers.md) | 人の端末で agent を対話で動かす(nsctl shell)。端末の道具(cmux など)とは組み合わせて使う | Accepted |
 | [0006](0006-agent-neutral-endpoints.md) | どの coding agent でも同じ境界で動かすため、経路と gateway の URL を置き換えと環境変数で渡す | Accepted |
-| [0007](0007-split-boundary-and-orchestrator-roles.md) | 境界(認証・通信・認証情報・起動)は nsctl、仕事の割り振りは orchestrator、画面は herdr に分ける | Proposed |
+| [0007](0007-split-boundary-and-orchestrator-roles.md) | 境界(認証・通信・認証情報・起動)は nsctl、仕事の割り振りは orchestrator、画面は herdr に分ける | Accepted |
