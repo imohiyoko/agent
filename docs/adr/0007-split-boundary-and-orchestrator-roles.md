@@ -75,7 +75,7 @@
 
 ### 6. MCP の接続の許可: 上限は宣言、絞り込みは orchestrator
 
-人の提案(2026-11-25): 「mcp 認証をオーケストレーターが持つようにして、どの agent? terminal? workspace? namespace に対して個別に一つ一つの mcp への接続許可を出す形がいい」。
+人が選んだ(2026-11-25、「鍵は nsctl、許可は orchestrator」)。もとの提案: 「mcp 認証をオーケストレーターが持つようにして、どの agent? terminal? workspace? namespace に対して個別に一つ一つの mcp への接続許可を出す形がいい」。
 
 「どの単位に、どの MCP を許すか」は orchestrator が決める。鍵と強制は nsctl に残す。
 
@@ -145,7 +145,7 @@
 
 1. agent の主体を namespace の単位にしてよいか。worker ごとの区別が境界として要るなら、worker ごとに namespace を分ける。
 2. tb を MCP server として出し、agent からの報告をすべて gateway 経由にしてよいか(herdrOrchestrator 側の変更が要る)。
-3. MCP の鍵は nsctl、許可(上限の中での絞り込み)は orchestrator、の分け方でよいか(決定 6)。
+3. ~~MCP の鍵は nsctl、許可(上限の中での絞り込み)は orchestrator、の分け方でよいか(決定 6)。~~ **決まった**: 2026-11-25 に imohiyoko が「鍵は nsctl、許可は orchestrator」を選んだ。
 4. nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。やらなければ、orchestrator の権限の絞り込みは取り決めのままになる。
 
 ## 段階(案)
