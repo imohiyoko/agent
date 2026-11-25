@@ -95,7 +95,11 @@
 - 絞り込みは上限の中でだけできる。上限に無い server・tool を書いた要求は断る(黙って外さない)。
 - 絞り込みを渡さないときは、上限のとおり(今と同じ)。
 - 絞り込みは宣言を変えないので、design.md の性質 6(宣言を変える経路は PR だけ)は崩れない。権限を広げる道は増えない。
-- gateway は実行ごとに入口を分ける必要がある(今は namespace ごとに 1 つ)。実行の id を MCP の入口の URL か、実行ごとの鍵で見分ける(作り方は実装の PR で決める)。
+- gateway は実行ごとに入口を分ける(今は namespace ごとに 1 つ。`internal/server/server.go`)。
+  - 実行は、入口の URL や鍵ではなく、**どの入口に繋いだか**で見分ける。秘密の値を中に渡さない。同じ namespace の実行は HOME と書き込める場所を共有するので、中に置いた値は別の実行から読めるため。
+  - Linux: 入口は実行ごとの unix socket にし、その実行の bwrap にだけ bind する(今の `--bind <socket> <innerDir>/mcp.sock` と同じ形)。socket の実体は nsctl の状態の置き場所にあり、サンドボックスからは隠してある。実行 B のサンドボックスには A の socket が無く、ネットワークの namespace も別なので、B は A の入口に繋げない。
+  - macOS: 入口は実行ごとの port にし、その実行の Seatbelt の profile にだけ許す(今は namespace の port を `(allow network-outbound (remote ip "localhost:<port>"))` で許している)。B の profile は A の port を許さないので、B は A の入口に繋げない。
+  - どちらも、実行 B から実行 A の入口に繋げないことを試験で示す(段階 3)。
 - 「agent」の単位は使わない。agent の名前は agent の自己申告で、境界にならない。agent ごとに分けたいときは、実行ごとに絞るか、namespace を分ける。
 - orchestrator に鍵を持たせない理由:
   - 鍵を持つ部品が乗っ取られると、全部の MCP の鍵がまとめて漏れる。
