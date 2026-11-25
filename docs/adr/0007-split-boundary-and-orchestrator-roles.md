@@ -38,11 +38,18 @@
 - 仕事の上の判定(tb の policy)は残してよい。ただし「破られても境界は守られる」ものとして扱う。境界は nsctl だけが持つ。
 - 「違う権限が要る agent は、別の namespace に入れる」(ADR 0001 の 1)をそのまま使う。tb の役割(manager、worker、reviewer など)ごとに権限を分けたいときは、namespace を分ける。
 
-### 2. agent の主体は namespace にする
+### 2. agent の主体は「namespace + 実行」にする
 
-- agent は認証を持たない(ADR 0003)。orchestrator から見た agent の主体は「どの namespace から来たか」だけにする。
-- これは nsctl が強制できる。agent は自分の namespace の proxy と gateway にしか届かない(ADR 0002、0004)。
+人の答え(2026-11-25): 「できたらターミナル単位にしたいが、多分楽なのは namespace 単位」。
+
+- agent は認証を持たない(ADR 0003)。主体は agent の自己申告ではなく、nsctl が付ける。
+- 権限の上限は namespace でつく(通信、鍵、MCP の server と tool、HOME、書き込める場所、members)。今の nsctl と同じ。
+- terminal(= 1 つの実行)ごとの権限は、上限の中から絞ることでつける(決定 6 の MCP の絞り込み)。
+- orchestrator から見た主体は `<namespace>/<実行の id>` にする。gateway が、どの実行の入口から来たかで付ける。agent は変えられない。
+  - 決定 6 のために、gateway は実行ごとに入口を分ける。同じ仕組みで実行の id も分かるので、terminal 単位の主体は追加の手間が小さい。
+  - 第 1 段は namespace だけでもよい(実行の id が無いときは `<namespace>`)。
 - pane、環境変数、プロセスの親子による主体の判定(herdrOrchestrator ADR 0007 の段 1)は、境界としては使わない。
+- 限界: 実行の中で agent が子のプロセスや subagent を動かしても、主体は同じ実行のまま。それより細かくは分けない。
 
 ### 3. agent から orchestrator への道(報告、タスクの取得)
 
@@ -119,11 +126,9 @@
 - **未確認**
   - tb を MCP server として出す口は herdrOrchestrator にまだ無い(作る必要がある)。
   - proxy は loopback への通信を拒否する(ADR 0006)。認証情報の経路の上流を、同じ機械の tb(`http://127.0.0.1:<port>` か unix socket)にできるかは確かめていない。できなければ nsctl に「機械の上の上流」を足す変更が要る(ADR を別に書く)。
-  - gateway は呼んだのが namespace の中のどの実行かを上流に伝えない。tb が実行の単位(run の id)まで知りたいなら、gateway が付ける印を足す必要がある。
+  - gateway は今、呼んだのが namespace の中のどの実行かを上流に伝えない。決定 2 のため、gateway が実行の id を付ける印を足す(段階 3)。
   - nsctl のサンドボックスの中から herdr の socket(`herdr.sock`)に繋げないこと。Linux の bwrap は `/` を読み取り専用で見せるが、unix socket への接続は読み取り専用でも通るはず(推測)。herdr の状態の場所を `filesystem` の隠す場所に入れる必要がある。macOS の Seatbelt での扱いも確かめていない。
   - SSH agent の socket のファイル自体に、中から繋げないこと。`SSH_AUTH_SOCK` は渡らない(下の確認済み)が、場所を知っていれば繋げるかもしれない。Linux のネットワークの namespace は、ファイルの場所で開く unix socket を分けない。上と同じく隠す場所に入れる。
-- **推測**
-  - 1 つの namespace に worker を何体も入れる運用なら、tb から見て worker の区別は自己申告になる。区別が境界として要るなら、worker ごとに namespace を分けることになる。
 
 ## 限界(この決定で守れないこと)
 
@@ -143,7 +148,7 @@
 
 ## 人が決めること
 
-1. agent の主体を namespace の単位にしてよいか。worker ごとの区別が境界として要るなら、worker ごとに namespace を分ける。
+1. ~~agent の主体を namespace の単位にしてよいか。~~ **答え**(2026-11-25、imohiyoko): できれば terminal 単位、楽なのは namespace 単位。→ 決定 2 で、上限は namespace、主体と絞り込みは実行(terminal)単位にした。第 1 段は namespace だけでよい。
 2. tb を MCP server として出し、agent からの報告をすべて gateway 経由にしてよいか(herdrOrchestrator 側の変更が要る)。
 3. ~~MCP の鍵は nsctl、許可(上限の中での絞り込み)は orchestrator、の分け方でよいか(決定 6)。~~ **決まった**: 2026-11-25 に imohiyoko が「鍵は nsctl、許可は orchestrator」を選んだ。
 4. nsctl を、人や tb とは別の OS ユーザーで動かすところまでやるか。やらなければ、orchestrator の権限の絞り込みは取り決めのままになる。
@@ -153,7 +158,7 @@
 
 1. この ADR(役割の分け方)。
 2. nsctl: 認証情報の経路の上流に、同じ機械の tb を書けるようにする(要るなら)。
-3. nsctl: `run.create` と `nsctl shell` に MCP の絞り込みを足し、gateway が実行ごとに止める。
+3. nsctl: `run.create` と `nsctl shell` に MCP の絞り込みを足し、gateway が実行ごとに止める。上流(tb)には `<namespace>/<実行の id>` を付けて送る。
 4. herdrOrchestrator: tb の MCP server(`report`、`task_get`、`task_assign`)と、nsctl の API で worker を起動する部品。
 5. tb が API で起動した worker(`nsctl run`)は対話ではないので、pane では `nsctl logs <namespace> <id> -f`(ADR 0003 のログの API)で出力を見る。人が話しかける pane は、起動コマンドを `nsctl shell` にする(`herdr-up.sh` のプリセット。workspace ごとに namespace を決める)。中から herdr の socket と SSH agent に届かないことを試験で示す。
 6. nsctl を別の OS ユーザーで動かす(人が決めること 4)。
