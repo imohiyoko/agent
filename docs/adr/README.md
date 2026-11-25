@@ -14,3 +14,4 @@
 | [0006](0006-agent-neutral-endpoints.md) | どの coding agent でも同じ境界で動かすため、経路と gateway の URL を置き換えと環境変数で渡す | Accepted |
 | [0007](0007-split-boundary-and-orchestrator-roles.md) | 境界(認証・通信・認証情報・起動)は nsctl、仕事の割り振りは orchestrator、画面は herdr に分ける | Accepted(決定 3 は 0008 で置き換え) |
 | [0008](0008-orchestrator-as-nsctl-api-client-and-run-events.md) | orchestrator は nsctl の API の客にし、実行の途中の報告は nsctl が実行ごとに溜める | Accepted |
+| [0009](0009-run-activity-events-and-monitor-agent.md) | agent が何を叩いたかを nsctl が実行ごとに記録し、見張り役の agent に読ませる | Proposed |
